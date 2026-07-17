@@ -1,0 +1,8 @@
+{
+  "name": "bzm-vitals-upload-kit",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^22.15.3"
+  }
+}
