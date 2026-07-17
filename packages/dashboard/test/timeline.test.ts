@@ -9,7 +9,7 @@
 // Rendering geometry is deliberately not tested; it is looked at.
 
 import { describe, it, expect } from 'vitest';
-import type { Metric } from '@bzm/vitals-format';
+import type { Metric } from 'bzm-vitals-format';
 import { aggregateRoutes, joinOutcomes, markColdStarts, percentile } from '../src/aggregate.js';
 import type { AttributedSample } from '../src/attribute.js';
 import type { ReportData, SessionSummary } from '../src/report.js';

@@ -1,6 +1,7 @@
 {
-  "name": "@bzm/vitals-dashboard",
+  "name": "bzm-vitals-dashboard",
   "version": "0.1.0",
+  "private": true,
   "description": "Dashboard generator — point it at a BlazeMeter master id, get one self-contained static HTML file with the data baked in.",
   "type": "module",
   "main": "dist/index.js",
@@ -14,7 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bzm/vitals-format": "0.1.0",
+    "bzm-vitals-format": "0.1.0",
     "yauzl": "^3.1.0"
   },
   "devDependencies": {

@@ -39,7 +39,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..', '..');
 
 /** The dashboard package, loaded AFTER the root build guarantees dist exists. */
-type Dashboard = typeof import('@bzm/vitals-dashboard');
+type Dashboard = typeof import('bzm-vitals-dashboard');
 let dash: Dashboard;
 
 /** One real emitted file: its path, its raw bytes, and nothing interpreted. */
@@ -132,7 +132,7 @@ beforeAll(async () => {
   // no-op the build and fail the import below. A few seconds per run buys a
   // wiring that works from every state, not just the happy one.
   execSync('npx tsc --build --force', { cwd: REPO_ROOT, stdio: 'pipe' });
-  const dashboardPackage = '@bzm/vitals-dashboard';
+  const dashboardPackage = 'bzm-vitals-dashboard';
   dash = (await import(/* @vite-ignore */ dashboardPackage)) as Dashboard;
 
   server = await startFixtureServer();

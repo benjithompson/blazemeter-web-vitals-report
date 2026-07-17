@@ -3,7 +3,7 @@
 // scripts always run after init scripts), so the trap's flush-time timeline reads throw
 // while its already-registered observers keep working. A throw must cost the metric,
 // never the file.
-import { test, expect } from '@bzm/playwright-vitals';
+import { test, expect } from 'bzm-playwright-vitals';
 
 test('Hostile Page', async ({ page }) => {
   await page.goto('/hostile');

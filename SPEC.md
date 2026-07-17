@@ -195,7 +195,7 @@ The library's whole surface is **one changed import**:
 
 ```ts
 - import { test, expect, chromium } from '@playwright/test';
-+ import { test, expect } from '@bzm/playwright-vitals';
++ import { test, expect } from 'bzm-playwright-vitals';
 ```
 
 The only optional knob the entire design adds, declared only where a tester cares about grouping:
@@ -274,7 +274,7 @@ Same Route across different Tests **pools by default, splits on drill-in** — w
 ### The dashboard is a generator, not a viewer — forced, not chosen
 
 ```bash
-npx @bzm/vitals-dashboard --master 82723459 --out report.html
+npx bzm-vitals-dashboard --master 82723459 --out report.html
 ```
 
 `dataUrl` **expires in 20 minutes**, so a file holding a pre-signed URL renders beautifully today and is **broken tomorrow, silently**. The tool therefore **fetches → embeds → emits**: data baked in at build time, artifact permanent. Same command on a laptop or as a CI step — no separate modes. Nothing hosted, nothing stateful.

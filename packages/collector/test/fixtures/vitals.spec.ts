@@ -2,7 +2,7 @@
 // nothing here is collector-aware beyond the one changed import. The waits are what a
 // real tester writes anyway (assert what the user sees); they also make the harness's
 // CLS/INP assertions deterministic instead of a race against the flush.
-import { test, expect } from '@bzm/playwright-vitals';
+import { test, expect } from 'bzm-playwright-vitals';
 
 test('Click Then Navigate', async ({ page }) => {
   // Navigation 1: a real click (INP's qualifying interaction), then navigate away —

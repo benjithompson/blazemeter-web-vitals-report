@@ -20,7 +20,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SAMPLE_ATTACHMENT_PREFIX } from '@bzm/vitals-format';
+import { SAMPLE_ATTACHMENT_PREFIX } from 'bzm-vitals-format';
 import { runCli } from '../src/cli.js';
 import { jsonResponse, bytesResponse, recordingTransport } from './helpers/transport.js';
 import { makeZip } from './helpers/zip.js';

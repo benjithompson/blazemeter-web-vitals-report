@@ -11,7 +11,7 @@ import { access, mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ExecutionOutcome, Sample } from '@bzm/vitals-format';
+import type { ExecutionOutcome, Sample } from 'bzm-vitals-format';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = join(HERE, '..', 'fixtures');

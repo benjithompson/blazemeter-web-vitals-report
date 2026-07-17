@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { SCHEMA_VERSION } from '@bzm/vitals-format';
+import { SCHEMA_VERSION } from 'bzm-vitals-format';
 import { buildStandalone } from '../scripts/build-standalone';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import {
@@ -119,7 +119,7 @@ describe('the standalone file behaves as the package does under a relative TS im
     expect(source).toContain('scripts/build-standalone.ts');
     expect(source).toContain('adopt via npm when published');
     // No resolvable reference to the workspace package (comments may mention it).
-    expect(source).not.toMatch(/(?:from\s+|require\()\s*['"]@bzm\/vitals-format['"]/);
+    expect(source).not.toMatch(/(?:from\s+|require\()\s*['"]bzm-vitals-format['"]/);
     // No .js-extension self-imports and no top-level await — the things Playwright's
     // Engine-side TS loader chokes on.
     expect(source).not.toMatch(/from\s+'\.[^']*\.js'/);

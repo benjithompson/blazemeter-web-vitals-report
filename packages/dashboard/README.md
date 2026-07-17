@@ -1,4 +1,4 @@
-# @bzm/vitals-dashboard
+# bzm-vitals-dashboard
 
 Generator, not viewer: point it at a BlazeMeter master (Report) id and get one
 self-contained static HTML file with the data baked in. This package currently

@@ -35,7 +35,7 @@ import * as dashboardModule from '../src/index.js';
 import { attributeSample } from '../src/attribute.js';
 import type { AttributedSample, AttributedOutcome } from '../src/attribute.js';
 import type { DashboardSample } from '../src/parse.js';
-import type { Metric, TestIdentity, ExecutionStatus } from '@bzm/vitals-format';
+import type { Metric, TestIdentity, ExecutionStatus } from 'bzm-vitals-format';
 
 const KNOWN_ANSWERS = path.join(
   path.dirname(fileURLToPath(import.meta.url)),

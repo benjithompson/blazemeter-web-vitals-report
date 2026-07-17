@@ -6,7 +6,7 @@
 // this parser and asserts a full round-trip.
 
 import { describe, it, expect } from 'vitest';
-import { OUTCOME_ATTACHMENT_PREFIX, SAMPLE_ATTACHMENT_PREFIX } from '@bzm/vitals-format';
+import { OUTCOME_ATTACHMENT_PREFIX, SAMPLE_ATTACHMENT_PREFIX } from 'bzm-vitals-format';
 import {
   isOutcomeAttachment,
   isSampleAttachment,

@@ -17,7 +17,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SCHEMA_VERSION } from '@bzm/vitals-format';
+import { SCHEMA_VERSION } from 'bzm-vitals-format';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import {
   runPlaywright,

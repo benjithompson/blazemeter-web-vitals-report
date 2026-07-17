@@ -1,6 +1,6 @@
 # Standalone collector — BlazeMeter upload kit
 
-Runs the `@bzm/playwright-vitals` collector on real BlazeMeter Engines **without an npm
+Runs the `bzm-playwright-vitals` collector on real BlazeMeter Engines **without an npm
 publish**: the collector travels as a single generated file (`bzm-playwright-vitals.ts`) uploaded
 next to the spec, and the spec's one changed import is relative:
 
@@ -8,14 +8,16 @@ next to the spec, and the spec's one changed import is relative:
 import { test, expect } from './bzm-playwright-vitals';
 ```
 
-This kit exists for direct-upload validation. When the package is published, adopt it
-via npm instead — `bzm-playwright-vitals.ts` is a build artifact, never a second source of truth.
+This kit exists for direct-upload validation and for Engines with no registry
+access. The normal path is the published npm package (`npm install --save-dev
+bzm-playwright-vitals`, import from `'bzm-playwright-vitals'`) —
+`bzm-playwright-vitals.ts` is a build artifact, never a second source of truth.
 
 ## 1. Build the artifact
 
 ```sh
 # from the repo root
-npm --workspace @bzm/playwright-vitals run build:standalone
+npm --workspace bzm-playwright-vitals run build:standalone
 ```
 
 This regenerates `packages/collector/dist-standalone/bzm-playwright-vitals.ts` from the actual

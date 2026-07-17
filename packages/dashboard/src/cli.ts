@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The CLI — the tracer bullet's trigger:
 //
-//   npx @bzm/vitals-dashboard --master 82723459 --out report.html
+//   npx bzm-vitals-dashboard --master 82723459 --out report.html
 //
 // One command, one file, the data baked in. fetch → extract → adapt →
 // attribute → aggregate crudely → embed → emit. Cache-through: artifacts land

@@ -13,7 +13,7 @@
 //     test identity at all beyond a URL;
 //   - context.workers is null — never inferred from config.
 
-import type { Metric } from '@bzm/vitals-format';
+import type { Metric } from 'bzm-vitals-format';
 import type { DashboardSample } from './parse.js';
 
 /**

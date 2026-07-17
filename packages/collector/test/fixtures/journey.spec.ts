@@ -2,10 +2,10 @@
 // Nothing here is collector-aware: no per-Navigation call, no teardown, no vitals import
 // beyond `test`/`expect`. The only edit from a stock Playwright spec is this line:
 //
-//   import { test, expect } from '@bzm/playwright-vitals';   // was '@playwright/test'
+//   import { test, expect } from 'bzm-playwright-vitals';   // was '@playwright/test'
 //
 // Every Navigation these tests drive must leave one Sample file behind on its own.
-import { test, expect } from '@bzm/playwright-vitals';
+import { test, expect } from 'bzm-playwright-vitals';
 
 test('Landing Page', async ({ page }) => {
   await page.goto('/');

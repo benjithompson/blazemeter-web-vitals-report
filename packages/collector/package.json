@@ -1,21 +1,46 @@
 {
-  "name": "@bzm/playwright-vitals",
+  "name": "bzm-playwright-vitals",
   "version": "0.1.0",
   "description": "Journey web-vitals collector for Playwright suites on BlazeMeter — one changed import, one Sample per Navigation.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benjithompson/BlazeMeterPlaywrightReporting.git",
+    "directory": "packages/collector"
+  },
+  "keywords": [
+    "playwright",
+    "blazemeter",
+    "web-vitals",
+    "lcp",
+    "cls",
+    "inp",
+    "performance"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build",
     "build:standalone": "tsx scripts/build-standalone.ts",
     "typecheck": "tsc --build",
-    "test": "tsc --build && vitest run"
+    "test": "tsc --build && vitest run",
+    "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.40.0"
+    "@playwright/test": ">=1.40.0 <2"
   },
   "dependencies": {
-    "@bzm/vitals-format": "0.1.0"
+    "bzm-vitals-format": "0.1.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.45.0"

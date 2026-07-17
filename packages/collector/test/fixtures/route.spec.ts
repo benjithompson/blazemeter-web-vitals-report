@@ -1,7 +1,7 @@
 // Fixture spec for issue #4 — vitals.route(), the only knob on the whole surface.
 // The `vitals` fixture is destructured next to `page` exactly as SPEC.md shows; specs
 // that never mention it (journey.spec.ts et al.) must keep working unchanged.
-import { test, expect } from '@bzm/playwright-vitals';
+import { test, expect } from 'bzm-playwright-vitals';
 
 test('Declared Routes', async ({ page, vitals }) => {
   // route() after goto tags the Navigation the page is currently on — including an

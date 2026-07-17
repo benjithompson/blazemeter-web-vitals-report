@@ -15,7 +15,7 @@
 // renders a null as 0 — walked and asserted over every status.
 
 import { describe, it, expect } from 'vitest';
-import type { Metric } from '@bzm/vitals-format';
+import type { Metric } from 'bzm-vitals-format';
 import {
   aggregateRoutes,
   joinOutcomes,

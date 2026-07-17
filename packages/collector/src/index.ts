@@ -1,7 +1,7 @@
-// @bzm/playwright-vitals — the tester's one changed import.
+// bzm-playwright-vitals — the tester's one changed import.
 //
 //   - import { test, expect } from '@playwright/test';
-//   + import { test, expect } from '@bzm/playwright-vitals';
+//   + import { test, expect } from 'bzm-playwright-vitals';
 //
 // Adopting the collector is ONE changed import and nothing else: no per-Navigation
 // call, no teardown hook the tester owns. Every Navigation the test drives leaves one
@@ -38,7 +38,7 @@ import {
   type TestIdentity,
   type ExecutionOutcome,
   type ExecutionStatus,
-} from '@bzm/vitals-format';
+} from 'bzm-vitals-format';
 
 /** The binding the in-page trap calls to hand a raw reading back to Node. */
 const REPORT_BINDING = '__bzmVitalsReport';

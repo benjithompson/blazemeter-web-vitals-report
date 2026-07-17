@@ -12,7 +12,9 @@
 
 modules:
   blazemeter:
-    dedicated-ips: true
+    # Must be false on accounts without provisioned dedicated IPs — true fails
+    # master creation with a generic "Failed to create master".
+    dedicated-ips: false
 
 execution:
 - executor: playwright

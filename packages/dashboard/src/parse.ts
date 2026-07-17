@@ -21,7 +21,7 @@ import {
   type ExecutionOutcome,
   type Sample,
   type TestIdentity,
-} from '@bzm/vitals-format';
+} from 'bzm-vitals-format';
 
 /**
  * The dashboard's internal Sample. Identical to the on-disk format Sample except

@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { aggregateRoutes, markColdStarts } from '../src/aggregate.js';
 import { adaptLegacyAuditRecord } from '../src/legacy-adapter.js';
 import { attributeSample, type AttributedSample } from '../src/attribute.js';
-import type { Metric } from '@bzm/vitals-format';
+import type { Metric } from 'bzm-vitals-format';
 
 interface FixtureSample {
   repeat: number;

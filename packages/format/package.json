@@ -1,13 +1,28 @@
 {
-  "name": "@bzm/vitals-format",
+  "name": "bzm-vitals-format",
   "version": "0.1.0",
-  "private": true,
   "description": "Format v1 — the spine. The collector's only output and the dashboard's only input. A format change is one PR touching writer and reader together.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benjithompson/BlazeMeterPlaywrightReporting.git",
+    "directory": "packages/format"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build",
-    "typecheck": "tsc --build"
+    "typecheck": "tsc --build",
+    "prepublishOnly": "npm run build"
   }
 }

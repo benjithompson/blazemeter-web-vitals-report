@@ -6,7 +6,7 @@
 // geometry is deliberately NOT tested — it is looked at instead.
 
 import { describe, it, expect } from 'vitest';
-import type { Metric } from '@bzm/vitals-format';
+import type { Metric } from 'bzm-vitals-format';
 import { aggregateRoutes, joinOutcomes, markColdStarts } from '../src/aggregate.js';
 import type { AttributedOutcome, AttributedSample } from '../src/attribute.js';
 import type { ReportData, SessionSummary } from '../src/report.js';

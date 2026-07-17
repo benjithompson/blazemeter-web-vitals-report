@@ -1,0 +1,34 @@
+# Publish-check kit — Taurus config for the registry-resolution check (issue #11).
+#
+# The question this run answers: does a PUBLISHED npm dep resolve on a BlazeMeter
+# Engine? The spec imports 'bzm-playwright-vitals' by name and no collector file is
+# uploaded, so Samples can only exist if the Engine's `npm install` reached the
+# registry and installed the published package (and its bzm-vitals-format dep,
+# transitively).
+#
+# Small on purpose — one location, minimal load. concurrency 2, iterations 1
+# -> per Engine: --workers 2, --repeat-each 2; 2 tests x 2 repeats = 4 Executions,
+# 4 Outcomes, 6 Samples (Search Journey drives 2 Navigations, Single Page 1).
+#
+# Upload alongside: example.spec.ts, playwright.config.ts, package.json — FOUR files,
+# no bzm-playwright-vitals.ts.
+
+modules:
+  blazemeter:
+    # Must be false on accounts without provisioned dedicated IPs — true fails
+    # master creation with a generic "Failed to create master".
+    dedicated-ips: false
+
+execution:
+- executor: playwright
+  scenario: publish-check
+  iterations: 1
+  concurrency: 2
+  locations:
+      us-west-1: 1
+
+scenarios:
+    publish-check:
+        script: example.spec.ts
+        browser: chromium
+        # no `test:` filter — run every test in the spec

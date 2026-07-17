@@ -12,7 +12,7 @@
 //              thrower. A throw costs that metric ('error'), never the Sample.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Metric } from '@bzm/vitals-format';
+import type { Metric } from 'bzm-vitals-format';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import { runPlaywright, findSamples, type FoundSample } from './helpers/run-playwright';
 

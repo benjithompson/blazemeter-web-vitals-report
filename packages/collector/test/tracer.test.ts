@@ -11,7 +11,7 @@ import {
   SCHEMA_VERSION,
   SAMPLE_ATTACHMENT_PREFIX,
   type MetricStatus,
-} from '@bzm/vitals-format';
+} from 'bzm-vitals-format';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import {
   runPlaywright,

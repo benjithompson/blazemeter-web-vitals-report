@@ -6,7 +6,7 @@
 // from — a raw artifact file is not fully interpretable on its own, by design.
 // The two types are distinct and never share a name.
 
-import type { ExecutionOutcome, ExecutionStatus } from '@bzm/vitals-format';
+import type { ExecutionOutcome, ExecutionStatus } from 'bzm-vitals-format';
 import type { DashboardSample } from './parse.js';
 
 /** Where a Sample came from: the library's collector, or the incumbent's

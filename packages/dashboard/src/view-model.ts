@@ -11,7 +11,7 @@
 // Samples carry none and group as one explicit legacy Test group. Engines are
 // keyed by sessionId — the label rides along for humans and is never a key.
 
-import type { Metric } from '@bzm/vitals-format';
+import type { Metric } from 'bzm-vitals-format';
 import {
   aggregateRoutes,
   excludeFailedExecutions,
