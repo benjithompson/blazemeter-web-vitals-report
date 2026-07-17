@@ -7,11 +7,11 @@
 // reads the fixture server URL and output dir from the env we pass here.
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
+import { access, mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Sample } from '@bzm/vitals-format';
+import type { ExecutionOutcome, Sample } from '@bzm/vitals-format';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = join(HERE, '..', 'fixtures');
@@ -26,6 +26,12 @@ export interface RunOptions {
   args?: string[];
   /** Extra env for the child (merged over process.env). */
   env?: Record<string, string>;
+  /**
+   * SIGKILL the child's whole process group as soon as this file appears — the TRUE
+   * crash case: no teardown runs anywhere, so nothing may fabricate an Outcome. The
+   * spec signals readiness by creating the file (pass its path to the spec via `env`).
+   */
+  killWhenFileExists?: string;
 }
 
 export interface RunResult {
@@ -54,6 +60,10 @@ export async function runPlaywright(opts: RunOptions): Promise<RunResult> {
 
   const child = spawn('npx', args, {
     cwd: FIXTURES_DIR,
+    // Its own process group when a kill is planned, so SIGKILL reaches the Playwright
+    // workers too — killing only npx would leave the worker to tear down normally,
+    // which is exactly what the crash case must NOT do.
+    detached: opts.killWhenFileExists !== undefined,
     env: {
       ...process.env,
       PW_BASE_URL: opts.baseURL,
@@ -67,10 +77,24 @@ export async function runPlaywright(opts: RunOptions): Promise<RunResult> {
   child.stdout.on('data', (d) => (stdout += d.toString()));
   child.stderr.on('data', (d) => (stderr += d.toString()));
 
+  let killPoll: ReturnType<typeof setInterval> | undefined;
+  if (opts.killWhenFileExists !== undefined) {
+    const sentinel = opts.killWhenFileExists;
+    killPoll = setInterval(() => {
+      access(sentinel).then(
+        () => {
+          if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        },
+        () => {}, // not there yet — keep polling
+      );
+    }, 100);
+  }
+
   const exitCode = await new Promise<number | null>((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (code) => resolve(code));
   });
+  if (killPoll !== undefined) clearInterval(killPoll);
 
   return { outputDir, exitCode, stdout, stderr };
 }
@@ -108,6 +132,27 @@ export async function findSamples(outputDir: string): Promise<FoundSample[]> {
   for (const path of originals) {
     const sample = JSON.parse(await readFile(path, 'utf8')) as Sample;
     found.push({ path, sample });
+  }
+  return found;
+}
+
+export interface FoundOutcome {
+  path: string;
+  outcome: ExecutionOutcome;
+}
+
+/**
+ * The original Outcome files — matched by exact name `bzm-vitals-outcome.json`, one per
+ * Execution (outputPath() is per-test and a retry gets its own dir, so no index is
+ * needed). Attached copies carry a `-<sha1>` suffix and are excluded, same as Samples.
+ */
+export async function findOutcomes(outputDir: string): Promise<FoundOutcome[]> {
+  const files = await walkFiles(outputDir);
+  const originals = files.filter((f) => /\/bzm-vitals-outcome\.json$/.test(f));
+  const found: FoundOutcome[] = [];
+  for (const path of originals) {
+    const outcome = JSON.parse(await readFile(path, 'utf8')) as ExecutionOutcome;
+    found.push({ path, outcome });
   }
   return found;
 }

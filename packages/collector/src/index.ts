@@ -10,7 +10,9 @@
 // Issue #1 cut the seams (an in-page trap that flushes on its own listeners; a Node-side
 // binding that assembles and writes the Sample); issue #3 filled in the metric set: all
 // five vitals — TTFB, FCP, LCP, CLS, INP — each as {value, status}, every status true.
-// The Execution Outcome record and the vitals.route() knob are #4.
+// Issue #4 added the rest of the tester-facing surface: one Execution Outcome record per
+// test (written in fixture teardown, where testInfo.status is final), and vitals.route()
+// — the only knob, and an optional one.
 //
 // The load-bearing decisions, all measured on real Engines (see SPEC.md):
 //   * attach({ body }) writes NOTHING under Taurus and errors nowhere. The write-file-
@@ -29,10 +31,13 @@ import { basename } from 'node:path';
 import {
   SCHEMA_VERSION,
   SAMPLE_ATTACHMENT_PREFIX,
+  OUTCOME_ATTACHMENT_PREFIX,
   type Sample,
   type Metric,
   type MetricStatus,
   type TestIdentity,
+  type ExecutionOutcome,
+  type ExecutionStatus,
 } from '@bzm/vitals-format';
 
 /** The binding the in-page trap calls to hand a raw reading back to Node. */
@@ -76,6 +81,12 @@ interface CollectorState {
   failedRequests: number;
   /** In-flight writes; teardown awaits these so no Sample is lost to a race. */
   pending: Promise<void>[];
+  /**
+   * The route declared via vitals.route(), waiting for its Sample. Consumed
+   * synchronously with the navigationIndex claim (see the binding), so it always lands
+   * on the Navigation the page was on when route() was called.
+   */
+  pendingRoute: string | null;
 }
 
 /**
@@ -331,27 +342,41 @@ function metric(raw: RawMetric | undefined): Metric {
   return { value: null, status };
 }
 
-/**
- * Wire the collector onto a page: expose the Node binding, inject the trap, and count
- * requests. Order matters — the binding and init script must exist before the page
- * navigates, so the trap the first document runs can call back.
- */
-async function attachCollector(page: Page, testInfo: TestInfo, state: CollectorState): Promise<void> {
-  const identity: TestIdentity = {
+/** The identity every record carries — the same fields on a Sample and its Outcome, so
+ *  the (repeat, worker) join is between values read from ONE source at ONE place. */
+function testIdentity(testInfo: TestInfo): TestIdentity {
+  return {
     file: basename(testInfo.file),
     title: testInfo.title,
     project: testInfo.project.name,
     repeat: testInfo.repeatEachIndex,
     worker: testInfo.workerIndex,
   };
+}
+
+/**
+ * Wire the collector onto a page: expose the Node binding, inject the trap, and count
+ * requests. Order matters — the binding and init script must exist before the page
+ * navigates, so the trap the first document runs can call back.
+ */
+async function attachCollector(page: Page, testInfo: TestInfo, state: CollectorState): Promise<void> {
+  const identity = testIdentity(testInfo);
   // The DERIVED per-Engine worker count (Taurus's --workers), never a declared concurrency.
   const workers = testInfo.config.workers ?? null;
 
-  async function writeSample(reading: RawReading, navigationIndex: number): Promise<void> {
+  async function writeSample(
+    reading: RawReading,
+    navigationIndex: number,
+    route: string | null,
+  ): Promise<void> {
     const sample: Sample = {
       schemaVersion: SCHEMA_VERSION,
       ts: Math.round(reading.timeOrigin), // epoch ms at Navigation start — exactly one timestamp
       url: reading.url,
+      // A declared Route is verbatim — never normalized. No declaration means NO field
+      // (JSON.stringify drops undefined), never null: absent is the supported state the
+      // dashboard derives from, and the raw url above is always kept either way.
+      ...(route !== null ? { route } : {}),
       test: identity,
       navigationIndex,
       vitals: {
@@ -387,9 +412,14 @@ async function attachCollector(page: Page, testInfo: TestInfo, state: CollectorS
 
   await page.exposeBinding(REPORT_BINDING, async (_source, reading: RawReading) => {
     // navigationIndex is claimed synchronously at call time, so ordering follows flush
-    // order (= ts order) even when writes below run concurrently.
+    // order (= ts order) even when writes below run concurrently. The pending route is
+    // consumed in the same synchronous step: pagehide fires before the next document's
+    // load, and binding messages arrive in order, so a route() the test calls after a
+    // goto() resolves can never be stolen by the Navigation that goto left behind.
     const navigationIndex = state.nextNavigationIndex++;
-    const p = writeSample(reading, navigationIndex);
+    const route = state.pendingRoute;
+    state.pendingRoute = null;
+    const p = writeSample(reading, navigationIndex, route);
     state.pending.push(p);
     await p;
   });
@@ -422,25 +452,110 @@ async function flushOnTeardown(page: Page, state: CollectorState): Promise<void>
   await Promise.allSettled(state.pending);
 }
 
+/** The Outcome record's closed status vocabulary. testInfo.status can also be
+ *  'interrupted' (ctrl-c) or undefined — Executions that never finished, which leave
+ *  NO record by design. */
+const OUTCOME_STATUSES: ReadonlySet<ExecutionStatus> = new Set<ExecutionStatus>([
+  'passed',
+  'failed',
+  'timedOut',
+  'skipped',
+]);
+
 /**
- * The auto-fixture. Overriding `page` means the collector rides along on the exact page
- * the test drives — journey vitals, not a cold re-navigation — and the tester writes
- * nothing. Teardown runs even when the test body throws (try/finally), so every
- * Navigation recorded before a mid-journey crash survives.
+ * Write-then-attach the one Execution Outcome record. Runs in fixture teardown, where
+ * testInfo.status IS final: teardown runs after the test body and all afterEach hooks,
+ * and a timed-out test still reaches it (Playwright grants teardown its own budget).
+ * A worker killed before teardown writes nothing — that ABSENCE is the crash signal;
+ * no catch-all may fabricate a record for an Execution that never finished.
  */
-export const test = base.extend<{ page: Page }>({
-  page: async ({ page }, use, testInfo) => {
+async function writeOutcome(testInfo: TestInfo): Promise<void> {
+  const status = testInfo.status;
+  if (status === undefined || !OUTCOME_STATUSES.has(status as ExecutionStatus)) return;
+  const outcome: ExecutionOutcome = {
+    schemaVersion: SCHEMA_VERSION,
+    test: testIdentity(testInfo),
+    status: status as ExecutionStatus,
+    // A retry is ANOTHER Execution: it re-runs this whole fixture graph and records its
+    // own outcome (in a fresh worker, so the (repeat, worker) join stays unambiguous).
+    retry: testInfo.retry,
+  };
+  // Same mandatory two-step as Samples. No index in the name: outputPath() is per-test
+  // (a retry gets its own dir), so one Outcome per Execution never collides.
+  const outPath = testInfo.outputPath(`${OUTCOME_ATTACHMENT_PREFIX}.json`);
+  await writeFile(outPath, JSON.stringify(outcome), 'utf8');
+  await testInfo.attach(OUTCOME_ATTACHMENT_PREFIX, {
+    path: outPath,
+    contentType: 'application/json',
+  });
+}
+
+/**
+ * The one knob on the whole surface, and it is optional. route() declares the Route for
+ * the Navigation the page is CURRENTLY on — the most recent one — or, when called before
+ * any navigation, for the next one. So `await page.goto('/order/12345');
+ * vitals.route('/order/{id}')` reads naturally, and tagging an intermediate Navigation
+ * works as long as the page is still on it. What route() cannot do is retro-tag a
+ * Navigation the page has already left: its Sample flushed at pagehide and may be on
+ * disk. Declaring nothing is a supported, correct state — the dashboard derives a Route
+ * from the raw url, which is always kept regardless, and a declared Route wins over a
+ * derived one.
+ */
+export interface VitalsControls {
+  route(route: string): void;
+}
+
+type CollectorFixtures = {
+  page: Page;
+  vitals: VitalsControls;
+  /** Internal — the per-test state `page` and `vitals` share. Not for testers. */
+  _collectorState: CollectorState;
+};
+
+/**
+ * The auto-fixture graph. Overriding `page` means the collector rides along on the exact
+ * page the test drives — journey vitals, not a cold re-navigation — and the tester
+ * writes nothing. Teardown runs even when the test body throws (try/finally), so every
+ * Navigation recorded before a mid-journey crash survives.
+ *
+ * _collectorState is a dependency of BOTH page and vitals, so it sets up first and tears
+ * down LAST — after page's teardown flush. That is why the Outcome write lives in ITS
+ * teardown: every Sample is already on disk, and testInfo.status is final there.
+ */
+export const test = base.extend<CollectorFixtures>({
+  _collectorState: async ({}, use, testInfo) => {
     const state: CollectorState = {
       nextNavigationIndex: 1,
       requestCount: 0,
       failedRequests: 0,
       pending: [],
+      pendingRoute: null,
     };
-    await attachCollector(page, testInfo, state);
+    await use(state);
+    await writeOutcome(testInfo);
+  },
+
+  // auto: the Outcome must exist for EVERY Execution, including tests that never touch
+  // `page` — and `vitals` existing whether or not a spec destructures it keeps the
+  // surface at one changed import. (A statically-skipped test never sets up fixtures at
+  // all, so it leaves no record — observed behavior, pinned in the Seam 1 harness.)
+  vitals: [
+    async ({ _collectorState }, use) => {
+      await use({
+        route: (route: string) => {
+          _collectorState.pendingRoute = route;
+        },
+      });
+    },
+    { auto: true },
+  ],
+
+  page: async ({ page, _collectorState }, use, testInfo) => {
+    await attachCollector(page, testInfo, _collectorState);
     try {
       await use(page);
     } finally {
-      await flushOnTeardown(page, state);
+      await flushOnTeardown(page, _collectorState);
     }
   },
 });

@@ -16,8 +16,10 @@ import { startFixtureServer, type FixtureServer } from './helpers/fixture-server
 import {
   runPlaywright,
   findSamples,
+  findOutcomes,
   anyFileContains,
   type FoundSample,
+  type FoundOutcome,
 } from './helpers/run-playwright';
 
 // A distinctive, token-shaped value we plant in the child env. It must appear in NO
@@ -26,6 +28,7 @@ const FAKE_TOKEN = 'SESSION-TOKEN-a1b2c3d4e5f6-DO-NOT-LEAK';
 
 let server: FixtureServer;
 let samples: FoundSample[];
+let outcomes: FoundOutcome[];
 let wallStart: number;
 let wallEnd: number;
 let outputDir: string;
@@ -47,6 +50,7 @@ beforeAll(async () => {
   wallEnd = Date.now();
 
   samples = await findSamples(run.outputDir);
+  outcomes = await findOutcomes(run.outputDir);
   // Keep the output dir path around for the token-leak scan.
   outputDir = run.outputDir;
 }, 120_000);
@@ -191,6 +195,58 @@ describe('the two-step wrote a real file at the outputPath location', () => {
       expect(path).toMatch(
         new RegExp(`/${SAMPLE_ATTACHMENT_PREFIX}-\\d+\\.json$`),
       );
+    }
+  });
+});
+
+describe('every Execution leaves exactly one Outcome record', () => {
+  it('6 Executions (3 tests x 2 repeats) -> 6 Outcomes, no more, no fewer', () => {
+    // A throw still runs teardown (try/finally), so Crasher gets a REAL 'failed'
+    // outcome — the no-teardown-at-all case (SIGKILL) lives in outcome.test.ts.
+    expect(outcomes.length).toBe(6);
+    for (const { outcome } of outcomes) {
+      expect(outcome.schemaVersion).toBe(SCHEMA_VERSION);
+      expect(outcome.retry).toBe(0);
+      expect(outcome.test.file).toBe('journey.spec.ts');
+      expect(outcome.test.project).toBe('chromium');
+    }
+  });
+
+  it("passing tests record 'passed'; the throwing test records 'failed'", () => {
+    const byTitle = (title: string) =>
+      outcomes.filter((o) => o.outcome.test.title === title);
+    for (const title of ['Landing Page', 'Two Navigations']) {
+      const found = byTitle(title);
+      expect(found.length).toBe(2); // repeat 0 and 1
+      for (const { outcome } of found) expect(outcome.status).toBe('passed');
+    }
+    const crasher = byTitle('Crasher');
+    expect(crasher.length).toBe(2);
+    for (const { outcome } of crasher) expect(outcome.status).toBe('failed');
+  });
+
+  it('each Outcome joins its Samples on (repeat, worker) — asserted on the actual files', () => {
+    // Both directions: every Outcome finds its Execution's Samples with a byte-equal
+    // TestIdentity, and every Sample's Execution has exactly one Outcome.
+    const executionKey = (t: { title: string; repeat: number; worker: number }) =>
+      `${t.title}#${t.repeat}#${t.worker}`;
+
+    for (const { outcome } of outcomes) {
+      const joined = samples.filter(
+        (s) =>
+          s.sample.test.title === outcome.test.title &&
+          s.sample.test.repeat === outcome.test.repeat &&
+          s.sample.test.worker === outcome.test.worker,
+      );
+      expect(joined.length, executionKey(outcome.test)).toBeGreaterThan(0);
+      for (const s of joined) expect(s.sample.test).toEqual(outcome.test);
+    }
+
+    const outcomeKeys = outcomes.map((o) => executionKey(o.outcome.test));
+    expect(new Set(outcomeKeys).size).toBe(outcomeKeys.length); // one per Execution
+    for (const s of samples) {
+      const matches = outcomeKeys.filter((k) => k === executionKey(s.sample.test));
+      expect(matches.length, s.path).toBe(1);
     }
   });
 });
