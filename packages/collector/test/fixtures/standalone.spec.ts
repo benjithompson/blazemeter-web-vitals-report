@@ -3,11 +3,11 @@
 // a RELATIVE one that Playwright's own TS loader must transpile (the same path Taurus
 // takes on a BlazeMeter Engine):
 //
-//   import { test, expect } from './bzm-vitals';
+//   import { test, expect } from './bzm-playwright-vitals';
 //
-// ./bzm-vitals.ts is NOT committed — test/standalone.test.ts regenerates it from
+// ./bzm-playwright-vitals.ts is NOT committed — test/standalone.test.ts regenerates it from
 // src/index.ts via scripts/build-standalone.ts in beforeAll, so it can never be stale.
-import { test, expect } from './bzm-vitals';
+import { test, expect } from './bzm-playwright-vitals';
 
 test('Standalone Landing Page', async ({ page }) => {
   await page.goto('/');

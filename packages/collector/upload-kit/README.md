@@ -1,15 +1,15 @@
 # Standalone collector — BlazeMeter upload kit
 
 Runs the `@bzm/playwright-vitals` collector on real BlazeMeter Engines **without an npm
-publish**: the collector travels as a single generated file (`bzm-vitals.ts`) uploaded
+publish**: the collector travels as a single generated file (`bzm-playwright-vitals.ts`) uploaded
 next to the spec, and the spec's one changed import is relative:
 
 ```ts
-import { test, expect } from './bzm-vitals';
+import { test, expect } from './bzm-playwright-vitals';
 ```
 
 This kit exists for direct-upload validation. When the package is published, adopt it
-via npm instead — `bzm-vitals.ts` is a build artifact, never a second source of truth.
+via npm instead — `bzm-playwright-vitals.ts` is a build artifact, never a second source of truth.
 
 ## 1. Build the artifact
 
@@ -18,8 +18,8 @@ via npm instead — `bzm-vitals.ts` is a build artifact, never a second source o
 npm --workspace @bzm/playwright-vitals run build:standalone
 ```
 
-This regenerates `packages/collector/dist-standalone/bzm-vitals.ts` from the actual
-collector + format sources and copies it into this directory. `bzm-vitals.ts` is
+This regenerates `packages/collector/dist-standalone/bzm-playwright-vitals.ts` from the actual
+collector + format sources and copies it into this directory. `bzm-playwright-vitals.ts` is
 gitignored here — if it's missing, you haven't built it.
 
 ## 2. Upload — five files, together
@@ -30,8 +30,8 @@ the same shape as the probe run that already succeeded on 2 Engines) and upload 
 | file | role |
 |---|---|
 | `config.yml` | the Taurus config — this is what makes it a Playwright-executor test |
-| `example.spec.ts` | the journey (2 tests; imports `./bzm-vitals`) |
-| `bzm-vitals.ts` | the standalone collector (generated — step 1) |
+| `example.spec.ts` | the journey (2 tests; imports `./bzm-playwright-vitals`) |
+| `bzm-playwright-vitals.ts` | the standalone collector (generated — step 1) |
 | `playwright.config.ts` | defines the `chromium` project Taurus targets; `retries: 0` pinned |
 | `package.json` | deps for the Engine's `npm install` (Taurus REWRITES it there to inject its own reporter — that's normal) |
 

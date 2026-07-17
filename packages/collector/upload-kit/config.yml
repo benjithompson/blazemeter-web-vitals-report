@@ -8,7 +8,7 @@
 # The spec has TWO tests, so each Engine runs 2 tests x 4 repeats = 8 Executions;
 # small numbers on purpose — this is a validation run, not a load test.
 #
-# Upload alongside: example.spec.ts, bzm-vitals.ts, playwright.config.ts, package.json
+# Upload alongside: example.spec.ts, bzm-playwright-vitals.ts, playwright.config.ts, package.json
 
 modules:
   blazemeter:

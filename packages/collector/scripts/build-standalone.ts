@@ -1,8 +1,8 @@
 #!/usr/bin/env tsx
-// Builds dist-standalone/bzm-vitals.ts — the ONE-FILE variant of the collector that can
+// Builds dist-standalone/bzm-playwright-vitals.ts — the ONE-FILE variant of the collector that can
 // be uploaded directly to a BlazeMeter test next to a spec, no npm publish needed:
 //
-//   import { test, expect } from './bzm-vitals';
+//   import { test, expect } from './bzm-playwright-vitals';
 //
 // How it works, and why it cannot silently drift from @bzm/vitals-format:
 //
@@ -35,8 +35,8 @@ const COLLECTOR_DIR = join(HERE, '..');
 const COLLECTOR_SRC = join(COLLECTOR_DIR, 'src', 'index.ts');
 const FORMAT_SRC = join(COLLECTOR_DIR, '..', 'format', 'src', 'index.ts');
 const OUT_DIR = join(COLLECTOR_DIR, 'dist-standalone');
-const OUT_FILE = join(OUT_DIR, 'bzm-vitals.ts');
-const UPLOAD_KIT_COPY = join(COLLECTOR_DIR, 'upload-kit', 'bzm-vitals.ts');
+const OUT_FILE = join(OUT_DIR, 'bzm-playwright-vitals.ts');
+const UPLOAD_KIT_COPY = join(COLLECTOR_DIR, 'upload-kit', 'bzm-playwright-vitals.ts');
 
 const FORMAT_PACKAGE = '@bzm/vitals-format';
 
@@ -49,7 +49,7 @@ function topLevelNames(source: string): string[] {
 }
 
 export interface StandaloneBuild {
-  /** Absolute path of the emitted dist-standalone/bzm-vitals.ts. */
+  /** Absolute path of the emitted dist-standalone/bzm-playwright-vitals.ts. */
   outFile: string;
   /** The emitted source, for callers that want to copy it elsewhere. */
   source: string;
@@ -113,7 +113,7 @@ export async function buildStandalone(): Promise<StandaloneBuild> {
 
   const header = [
     '// =============================================================================',
-    '// bzm-vitals.ts — STANDALONE build of the BlazeMeter Playwright vitals collector',
+    '// bzm-playwright-vitals.ts — STANDALONE build of the BlazeMeter Playwright vitals collector',
     '//',
     `// ${pkg.name} v${pkg.version} — built ${new Date().toISOString()}`,
     '//',
@@ -122,7 +122,7 @@ export async function buildStandalone(): Promise<StandaloneBuild> {
     '// from packages/collector/src/index.ts with @bzm/vitals-format inlined. It is a',
     '// build artifact for DIRECT-UPLOAD VALIDATION — upload it to a BlazeMeter test',
     '// next to a spec that does:',
-    "//   import { test, expect } from './bzm-vitals';",
+    "//   import { test, expect } from './bzm-playwright-vitals';",
     '// It is not a second source of truth; adopt via npm when published.',
     '// =============================================================================',
     '',

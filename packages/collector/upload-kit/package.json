@@ -1,5 +1,5 @@
 {
-  "name": "bzm-vitals-upload-kit",
+  "name": "bzm-playwright-vitals-upload-kit",
   "private": true,
   "devDependencies": {
     "@playwright/test": "^1.61.1",

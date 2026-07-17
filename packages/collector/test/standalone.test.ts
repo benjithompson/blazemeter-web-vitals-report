@@ -1,8 +1,8 @@
-// Seam 1 for the STANDALONE build (dist-standalone/bzm-vitals.ts) — the one-file variant
+// Seam 1 for the STANDALONE build (dist-standalone/bzm-playwright-vitals.ts) — the one-file variant
 // uploaded directly to a BlazeMeter test next to a spec. Same rules as tracer.test.ts:
 // a REAL Playwright child run, assertions on the JSON files left on disk, never mocks.
 //
-// The child spec (fixtures/standalone.spec.ts) imports './bzm-vitals' — the exact
+// The child spec (fixtures/standalone.spec.ts) imports './bzm-playwright-vitals' — the exact
 // relative-TS-import path Playwright's own loader must transpile on an Engine. The file
 // it imports is REGENERATED here in beforeAll via the actual build script and copied
 // into the fixtures dir, so a stale artifact can never be what gets tested.
@@ -32,7 +32,7 @@ beforeAll(async () => {
   // Regenerate the artifact from src/index.ts, then place it NEXT TO the spec — the
   // upload-kit layout. Staleness is impossible: what runs is what the script just built.
   const { outFile } = await buildStandalone();
-  await copyFile(outFile, join(FIXTURES_DIR, 'bzm-vitals.ts'));
+  await copyFile(outFile, join(FIXTURES_DIR, 'bzm-playwright-vitals.ts'));
 
   server = await startFixtureServer();
   const run = await runPlaywright({

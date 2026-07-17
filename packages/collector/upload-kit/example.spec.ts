@@ -2,7 +2,7 @@
 // pages. Written exactly as a tester would write it, except the one changed import
 // points at the SIBLING FILE instead of the npm package (which is not published yet):
 //
-//   import { test, expect } from './bzm-vitals';   // was '@playwright/test'
+//   import { test, expect } from './bzm-playwright-vitals';   // was '@playwright/test'
 //
 // Playwright's own TS loader transpiles this relative import on the Engine, the same
 // way it transpiles the spec itself. Nothing else here is collector-aware.
@@ -21,7 +21,7 @@
 //     INP. A click on idle static text finishes under 16ms and honestly reports
 //     'no-interaction'. The short pause afterwards lets the paint that finalizes the
 //     interaction's duration happen before we navigate away.
-import { test, expect } from './bzm-vitals';
+import { test, expect } from './bzm-playwright-vitals';
 
 test('Search Journey', async ({ page, vitals }) => {
   // Navigation 1 — a server-rendered article page.
