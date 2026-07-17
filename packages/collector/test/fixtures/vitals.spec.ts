@@ -13,6 +13,29 @@ test('Click Then Navigate', async ({ page }) => {
   // The fixture page shifts layout 50ms in; waiting for the shifted-in content pins
   // the shift before the click (so it cannot be excluded as input-adjacent).
   await expect(page.getByText('late content')).toBeVisible();
+  // toBeVisible asserts LAYOUT, not paint presentation — and Chromium only REPORTS an
+  // LCP candidate on the frame's presentation feedback, then stops LCP cold at the
+  // first input, silently dropping a candidate whose feedback hasn't arrived yet
+  // (measured: a click landing before that feedback erases LCP forever while FCP
+  // still shows up). A layout shift presented after the click would likewise be
+  // excluded as input-adjacent. So under CPU load the click below could race the
+  // compositor and make LCP/CLS honestly unmeasurable. Wait until both entries
+  // actually EXIST before clicking — plain page-side code: a buffered observer
+  // replays entries the browser has already reported, synchronously via takeRecords.
+  // (Gated per type on supportedEntryTypes: this spec also runs on firefox, which has
+  // no layout-shift — an unsupported type would make the wait hang to the timeout.)
+  await page.waitForFunction(() => {
+    const supported = PerformanceObserver.supportedEntryTypes ?? [];
+    const has = (type: string) => {
+      if (!supported.includes(type)) return true; // nothing will ever arrive — skip
+      const probe = new PerformanceObserver(() => {});
+      probe.observe({ type, buffered: true });
+      const n = probe.takeRecords().length;
+      probe.disconnect();
+      return n > 0;
+    };
+    return has('largest-contentful-paint') && has('layout-shift');
+  });
   await page.click('#target');
   // The click handler appends #clicked-flag; awaiting it forces the paint that
   // finalizes the interaction's event-timing duration before we navigate away.
