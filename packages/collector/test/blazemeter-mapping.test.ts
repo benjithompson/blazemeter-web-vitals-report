@@ -13,6 +13,7 @@ import {
   resolveLocation,
   resolveEngine,
   isPushKilled,
+  isPerEngine,
   readDiscreteCredentials,
   type MappingContext,
 } from '../src/blazemeter-destination';
@@ -155,6 +156,26 @@ describe('sampleToIntervals — one interval per ok vital, none for anything els
   });
 });
 
+describe('aggregate mode — engine=null omits the Engine tier (per-location series)', () => {
+  const AGG: MappingContext = { ...CTX, engine: null };
+
+  it('a metricPath drops the Engine tier: Web Vitals | location | route | metric', () => {
+    const s = sample({ route: '/order/{id}', vitals: { lcp: m(2276.7, 'ok') } });
+    expect(sampleToIntervals(s, AGG)[0]!._id.metricPath).toBe(
+      'Web Vitals | us-west-1 | /order/{id} | LCP',
+    );
+  });
+
+  it('everything else (value encoding, CLS×1000, ts, only-ok) is unchanged', () => {
+    const s = sample({ route: '/p', vitals: { cls: m(0.08, 'ok'), inp: m(null, 'no-interaction') } });
+    const intervals = sampleToIntervals(s, AGG);
+    expect(intervals).toHaveLength(1);
+    expect(intervals[0]!._id.metricPath).toBe('Web Vitals | us-west-1 | /p | CLS×1000');
+    expect(intervals[0]!.kpis[0]!.value).toBe(80);
+    expect(intervals[0]!._id.ts).toBe(TS_SECONDS);
+  });
+});
+
 describe('buildInjectionBody — the POST payload for a batch', () => {
   it('flattens every sample’s intervals under one intervals[] array', () => {
     const batch = [
@@ -180,6 +201,16 @@ describe('env readers — activation and identity, all from named vars only', ()
     }
     for (const v of ['1', 'on', 'true', '', undefined]) {
       expect(isPushKilled({ BZM_VITALS_PUSH: v as string }), String(v)).toBe(false);
+    }
+  });
+
+  it('isPerEngine is off by default (aggregate); 1/true/on turn it on', () => {
+    expect(isPerEngine({})).toBe(false);
+    for (const v of ['1', 'true', 'on', 'ON', 'True']) {
+      expect(isPerEngine({ BZM_VITALS_PER_ENGINE: v }), v).toBe(true);
+    }
+    for (const v of ['0', 'off', 'false', '']) {
+      expect(isPerEngine({ BZM_VITALS_PER_ENGINE: v }), v).toBe(false);
     }
   });
 

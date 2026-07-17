@@ -134,7 +134,7 @@ describe('send — the injection POST', () => {
 
   it('POSTs to /api/v4/data/timeseries with Basic auth, JSON content-type, and the mapped body', async () => {
     const { d, calls } = await liveDestination(
-      { BLAZEMETER_MASTER_ID: '82731957', LOCATION: 'us-west-1', BZM_VITALS_ENGINE: '#1', BLAZEMETER_API_BASE: 'https://api.example.com' },
+      { BLAZEMETER_MASTER_ID: '82731957', LOCATION: 'us-west-1', BZM_VITALS_ENGINE: '#1', BZM_VITALS_PER_ENGINE: '1', BLAZEMETER_API_BASE: 'https://api.example.com' },
       () => ({}),
     );
     await d.send([sample({ lcp: { value: 2276.4, status: 'ok' } })]);
@@ -151,6 +151,17 @@ describe('send — the injection POST', () => {
         },
       ],
     });
+  });
+
+  it('aggregates per location by DEFAULT — no Engine tier in the metricPath', async () => {
+    const { d, calls } = await liveDestination(
+      { BLAZEMETER_MASTER_ID: '1', LOCATION: 'us-west-1', BZM_VITALS_ENGINE: '#1' }, // PER_ENGINE unset
+      () => ({}),
+    );
+    await d.send([sample({ lcp: { value: 2276.4, status: 'ok' } })]);
+    const post = calls.find((c) => c.method === 'POST')!;
+    const path = (post.body as { intervals: Array<{ _id: { metricPath: string } }> }).intervals[0]!._id.metricPath;
+    expect(path).toBe('Web Vitals | us-west-1 | /order/9 | LCP');
   });
 
   it('carries the string-resolved masterId as an integer in the body', async () => {
@@ -177,7 +188,7 @@ describe('send — the injection POST', () => {
       }
       return {};
     });
-    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-me', TAURUS_SESSIONS_INDEX: '1' }, fetch });
+    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-me', TAURUS_SESSIONS_INDEX: '1', BZM_VITALS_PER_ENGINE: '1' }, fetch });
     await d.init();
     await d.send([sample({ lcp: { value: 100, status: 'ok' } })]);
     const post = calls.find((c) => c.method === 'POST')!;

@@ -116,6 +116,14 @@ or `playwright.config.ts` change is needed. Optional knobs, all via env:
 | `BLAZEMETER_API_BASE` | `https://a.blazemeter.com` | override for EU / on-prem BlazeMeter |
 | `BZM_VITALS_PROFILE` | `Web Vitals` | the Timeline profile name |
 | `BZM_VITALS_FLUSH_MS` | `10000` | how often buffered points are sent |
+| `BZM_VITALS_PER_ENGINE` | off | `1`/`true`/`on` keeps each Engine as its own series (`… \| location \| #N \| route \| metric`); default aggregates all Engines in a location onto one series |
+| `BZM_VITALS_LOCATION` | (auto) | override the location tier; otherwise resolved from the master (falls back to `loc-{index}`) |
+
+By default the Timeline groups vitals as **`Web Vitals | {location} | {route} | {metric}`**
+— all Engines in a location averaged onto one series, so a large fleet doesn't
+flood the tree with a series per Engine. Set `BZM_VITALS_PER_ENGINE` to break each
+Engine out as `Web Vitals | {location} | #{N} | {route} | {metric}` when you need
+to spot a single slow Engine.
 
 The credential travels only in the `Authorization` header and is never written
 to any Sample, log, or artifact.

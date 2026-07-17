@@ -41,7 +41,6 @@ const OVERRIDE_ENV_MASTER = 42_424_242; // the BLAZEMETER_MASTER_ID override —
 const PUSH_BASE = {
   BLAZEMETER_API_KEY_ID: KEY_ID,
   BLAZEMETER_API_KEY_SECRET: KEY_SECRET,
-  BZM_VITALS_ENGINE: '#1',
   // Small cadence so the flush timer fires during the short run (teardown drain backstops it).
   BZM_VITALS_FLUSH_MS: '250',
 };
@@ -101,7 +100,8 @@ beforeAll(async () => {
     runPlaywright({
       spec: 'hostile.spec.ts',
       baseURL: pageServer.url,
-      env: { ...PUSH_BASE, SESSION_ID: 'r-v4-hostile', BLAZEMETER_API_BASE: bzmHostile.url },
+      // Per-Engine mode here, so the run also exercises the Engine tier live.
+      env: { ...PUSH_BASE, SESSION_ID: 'r-v4-hostile', BLAZEMETER_API_BASE: bzmHostile.url, BZM_VITALS_PER_ENGINE: '1' },
     }),
     runPlaywright({
       spec: 'vitals.spec.ts',
@@ -169,13 +169,12 @@ describe('the happy path: importing the collector + api-key env + a resolvable m
       expect(iv._id.masterId).toBe(PUSH_MASTER);
       expect(iv.profileName).toBe('Web Vitals');
       const tiers = iv._id.metricPath.split(' | ');
-      expect(tiers).toHaveLength(5);
+      // Default is aggregate-per-location: NO Engine tier. 4 tiers, metric as leaf.
+      expect(tiers).toHaveLength(4);
       expect(tiers[0]).toBe('Web Vitals');
       expect(tiers[1]).toBe('us-west-1'); // resolved from the master status (see next test)
-      expect(tiers[2]).toBe('#1');
-      // tier 3 is the route (/ or /second on this spec); tier 4 is the metric leaf.
-      expect(['/', '/second']).toContain(tiers[3]);
-      expect(['TTFB', 'FCP', 'LCP', 'CLS×1000', 'INP']).toContain(tiers[4]);
+      expect(['/', '/second']).toContain(tiers[2]);
+      expect(['TTFB', 'FCP', 'LCP', 'CLS×1000', 'INP']).toContain(tiers[3]);
     }
   });
 
@@ -239,6 +238,18 @@ describe('only status:ok metrics produce an interval — verified on the real no
     expect(leaves.has('INP')).toBe(false); // never clicked → no-interaction → excluded
     expect(leaves.has('LCP')).toBe(true); // observer survived the sabotage
     expect(leaves.has('CLS×1000')).toBe(true);
+  });
+
+  it('per-Engine mode (BZM_VITALS_PER_ENGINE=1) restores the Engine tier: Web Vitals | location | #N | route | metric', () => {
+    const intervals = intervalsOf(bzmHostile);
+    expect(intervals.length).toBeGreaterThan(0);
+    for (const iv of intervals) {
+      const tiers = iv._id.metricPath.split(' | ');
+      expect(tiers, iv._id.metricPath).toHaveLength(5);
+      expect(tiers[0]).toBe('Web Vitals');
+      expect(tiers[1]).toBe('us-east-1'); // from status
+      expect(tiers[2], iv._id.metricPath).toMatch(/^#\d+$/); // Engine tier present again
+    }
   });
 });
 

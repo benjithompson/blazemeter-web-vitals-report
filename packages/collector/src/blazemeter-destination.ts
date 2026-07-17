@@ -30,7 +30,9 @@ export interface Interval {
 export interface MappingContext {
   masterId: number;
   location: string;
-  engine: string;
+  /** The Engine tier, or null to AGGREGATE per location (omit the tier so every Engine in
+   *  a location shares one series and BlazeMeter averages them). */
+  engine: string | null;
   profileName: string;
 }
 
@@ -80,7 +82,13 @@ export function sampleToIntervals(sample: Sample, ctx: MappingContext): Interval
   for (const [name, metric] of Object.entries(sample.vitals)) {
     const encoded = encodeMetric(name, metric);
     if (encoded === null) continue;
-    const metricPath = [ROOT_TIER, ctx.location, ctx.engine, route, encoded.leaf].join(TIER_SEP);
+    // Engine tier is included only in per-Engine mode; otherwise it is omitted so every
+    // Engine in a location aggregates onto one series.
+    const tiers =
+      ctx.engine !== null
+        ? [ROOT_TIER, ctx.location, ctx.engine, route, encoded.leaf]
+        : [ROOT_TIER, ctx.location, route, encoded.leaf];
+    const metricPath = tiers.join(TIER_SEP);
     intervals.push({
       _id: { masterId: ctx.masterId, metricPath, ts },
       kpis: [{ value: encoded.value, ts }],
@@ -105,6 +113,17 @@ type Env = Record<string, string | undefined>;
 export function isPushKilled(env: Env): boolean {
   const v = (env.BZM_VITALS_PUSH ?? '').trim().toLowerCase();
   return v === '0' || v === 'off' || v === 'false';
+}
+
+/**
+ * Per-Engine breakdown vs per-location aggregation. Default is AGGREGATE (no Engine tier)
+ * — a run with many Engines would otherwise flood the Timeline with #1…#N series per
+ * route/metric. Set BZM_VITALS_PER_ENGINE to 1/true/on to keep each Engine as its own
+ * series (e.g. to spot one slow Engine within a location).
+ */
+export function isPerEngine(env: Env): boolean {
+  const v = (env.BZM_VITALS_PER_ENGINE ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'on';
 }
 
 /**
@@ -229,7 +248,8 @@ export class BlazeMeterDestination implements Destination {
    *  BlazeMeter location name from the master status in init() unless env set it explicitly. */
   private location: string;
   private readonly locationExplicit: boolean;
-  private readonly engine: string;
+  /** The Engine tier label, or null to aggregate per location (default). */
+  private readonly engine: string | null;
   private readonly sessionId: string | undefined;
   private readonly masterIdOverride: number | null;
   private readonly fetchImpl: FetchLike;
@@ -245,7 +265,8 @@ export class BlazeMeterDestination implements Destination {
     this.profileName = env.BZM_VITALS_PROFILE?.trim() || DEFAULT_PROFILE;
     this.location = resolveLocation(env);
     this.locationExplicit = Boolean(env.BZM_VITALS_LOCATION?.trim() || env.LOCATION?.trim());
-    this.engine = resolveEngine(env);
+    // null → aggregate per location (the default); a label → per-Engine series.
+    this.engine = isPerEngine(env) ? resolveEngine(env) : null;
     this.sessionId = env.SESSION_ID?.trim() || undefined;
     this.masterIdOverride = coerceMasterId(env.BLAZEMETER_MASTER_ID);
     this.fetchImpl = deps.fetch ?? ((url, init) => fetch(url, init) as unknown as Promise<FetchResponse>);
