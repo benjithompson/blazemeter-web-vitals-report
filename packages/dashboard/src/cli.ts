@@ -11,7 +11,7 @@
 // The bin entry is this thin wrapper; tests invoke runCli in-process with a
 // stubbed Transport and never touch the network.
 
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -87,10 +87,28 @@ export async function runCli(opts: RunCliOptions): Promise<{ outPath: string }> 
 }
 
 // Thin executable wrapper — everything above is invocable in-process.
-const isDirectRun =
-  typeof process.argv[1] === 'string' &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isDirectRun) {
+//
+// npm installs the bin as a SYMLINK (node_modules/.bin/… -> dist/cli.js), so
+// process.argv[1] is the symlink path while import.meta.url is realpath-
+// resolved. Comparing them raw never matches through the installed bin, and the
+// CLI silently no-ops (shipped broken in 0.1.0). Realpath-resolve argv[1] first;
+// fall back to the raw compare if it can't be resolved. Pure and exported so the
+// resolution logic is unit-tested without spawning a process (test/cli-entry).
+export function isEntryPoint(
+  metaUrl: string,
+  argv1: string | undefined,
+  realpath: (p: string) => string = realpathSync,
+): boolean {
+  if (typeof argv1 !== 'string') return false;
+  try {
+    if (metaUrl === pathToFileURL(realpath(argv1)).href) return true;
+  } catch {
+    // argv1 isn't a resolvable path (unusual loader) — fall through.
+  }
+  return metaUrl === pathToFileURL(argv1).href;
+}
+
+if (isEntryPoint(import.meta.url, process.argv[1])) {
   runCli({ argv: process.argv.slice(2) }).catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);

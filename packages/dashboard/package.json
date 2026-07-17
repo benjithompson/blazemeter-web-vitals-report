@@ -1,6 +1,6 @@
 {
   "name": "bzm-vitals-dashboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Dashboard generator — point it at a BlazeMeter master id, get one self-contained static HTML file with the data baked in.",
   "license": "MIT",
   "repository": {
