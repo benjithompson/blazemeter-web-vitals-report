@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/benjithompson/BlazeMeterPlaywrightReporting.git",
+    "url": "git+https://github.com/benjithompson/blazemeter-web-vitals-report.git",
     "directory": "packages/format"
   },
   "type": "module",

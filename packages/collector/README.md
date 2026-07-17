@@ -14,7 +14,7 @@ You change **one import**. Your test bodies stay untouched.
 Every navigation your test makes now leaves one small JSON **Sample** as a
 Playwright attachment, and every test leaves one **Outcome** record. On
 BlazeMeter those land in each Engine's `artifacts.zip`, where the companion
-[dashboard](https://github.com/benjithompson/BlazeMeterPlaywrightReporting)
+[dashboard](https://github.com/benjithompson/blazemeter-web-vitals-report)
 turns a finished run into a single self-contained `report.html`.
 
 Forgetting the import swap produces **no data at all** — loud, not a silent gap.
