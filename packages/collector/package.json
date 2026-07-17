@@ -1,6 +1,6 @@
 {
   "name": "bzm-playwright-vitals",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Journey web-vitals collector for Playwright suites on BlazeMeter — one changed import, one Sample per Navigation.",
   "license": "MIT",
   "repository": {
@@ -40,7 +40,7 @@
     "@playwright/test": ">=1.40.0 <2"
   },
   "dependencies": {
-    "bzm-vitals-format": "0.1.0"
+    "bzm-vitals-format": "0.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.45.0"
