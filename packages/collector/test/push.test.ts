@@ -35,11 +35,12 @@ const HOSTILE_MASTER = 222_222;
 const OVERRIDE_SERVER_MASTER = 333_333; // what the double WOULD resolve — must be ignored
 const OVERRIDE_ENV_MASTER = 42_424_242; // the BLAZEMETER_MASTER_ID override — must win
 
-/** The push env shared by every run that SHOULD push. Each run adds its own base + session. */
+/** The push env shared by every run that SHOULD push. Each run adds its own base + session.
+ *  NOTE: no LOCATION here on purpose — the location tier must come from the master status
+ *  (GET /masters/{id}/status), exactly as on a real Engine where LOCATION is absent. */
 const PUSH_BASE = {
   BLAZEMETER_API_KEY_ID: KEY_ID,
   BLAZEMETER_API_KEY_SECRET: KEY_SECRET,
-  LOCATION: 'us-west-1',
   BZM_VITALS_ENGINE: '#1',
   // Small cadence so the flush timer fires during the short run (teardown drain backstops it).
   BZM_VITALS_FLUSH_MS: '250',
@@ -75,9 +76,10 @@ let pushSamples: Sample[];
 beforeAll(async () => {
   pageServer = await startFixtureServer();
   [bzmPush, bzmFirefox, bzmHostile, bzmOverride, bzmNoCreds, bzmError] = await Promise.all([
-    startBlazeMeterServer({ masterId: PUSH_MASTER }),
-    startBlazeMeterServer({ masterId: FIREFOX_MASTER }),
-    startBlazeMeterServer({ masterId: HOSTILE_MASTER }),
+    // statusSessions carries the location name the collector reads back (LOCATION is unset).
+    startBlazeMeterServer({ masterId: PUSH_MASTER, statusSessions: [{ id: 'r-v4-push', locationId: 'us-west-1' }] }),
+    startBlazeMeterServer({ masterId: FIREFOX_MASTER, statusSessions: [{ id: 'r-v4-firefox', locationId: 'us-west-2' }] }),
+    startBlazeMeterServer({ masterId: HOSTILE_MASTER, statusSessions: [{ id: 'r-v4-hostile', locationId: 'us-east-1' }] }),
     startBlazeMeterServer({ masterId: OVERRIDE_SERVER_MASTER }),
     startBlazeMeterServer({ masterId: 999 }),
     // Every injection POST 500s — the best-effort path under a broken API.
@@ -169,11 +171,20 @@ describe('the happy path: importing the collector + api-key env + a resolvable m
       const tiers = iv._id.metricPath.split(' | ');
       expect(tiers).toHaveLength(5);
       expect(tiers[0]).toBe('Web Vitals');
-      expect(tiers[1]).toBe('us-west-1');
+      expect(tiers[1]).toBe('us-west-1'); // resolved from the master status (see next test)
       expect(tiers[2]).toBe('#1');
       // tier 3 is the route (/ or /second on this spec); tier 4 is the metric leaf.
       expect(['/', '/second']).toContain(tiers[3]);
       expect(['TTFB', 'FCP', 'LCP', 'CLS×1000', 'INP']).toContain(tiers[4]);
+    }
+  });
+
+  it('the location tier is resolved from GET /masters/{id}/status matched by SESSION_ID (LOCATION unset)', () => {
+    const statusGets = bzmPush.statusRequests();
+    expect(statusGets.length).toBeGreaterThan(0);
+    expect(decodeBasicAuth(statusGets[0]!.authorization)).toBe(`${KEY_ID}:${KEY_SECRET}`);
+    for (const iv of intervalsOf(bzmPush)) {
+      expect(iv._id.metricPath.split(' | ')[1], iv._id.metricPath).toBe('us-west-1');
     }
   });
 

@@ -25,6 +25,8 @@ export interface BlazeMeterServer {
   requests: CapturedRequest[];
   /** GET /api/v4/sessions/{id} — the masterId resolutions. */
   sessionRequests(): CapturedRequest[];
+  /** GET /api/v4/masters/{id}/status — the location-name resolutions. */
+  statusRequests(): CapturedRequest[];
   /** POST /api/v4/data/timeseries — the injections. */
   injectionRequests(): CapturedRequest[];
   close(): Promise<void>;
@@ -49,6 +51,9 @@ export interface BlazeMeterServerOptions {
   sessionStatus?: number;
   /** Force POST /data/timeseries to this status (default 200) — for the push-failure path. */
   injectionStatus?: number;
+  /** Sessions GET /masters/{id}/status returns — the collector reads its own locationId here
+   *  (LOCATION is absent on a real Engine). Empty by default (location falls back). */
+  statusSessions?: Array<{ id: string; locationId: string | null }>;
 }
 
 /**
@@ -76,6 +81,12 @@ export async function startBlazeMeterServer(opts: BlazeMeterServerOptions): Prom
         res.end(JSON.stringify(sessionStatus === 200 ? { result: { masterId: opts.masterId } } : { error: 'forced' }));
         return;
       }
+      if (req.method === 'GET' && /^\/api\/v4\/masters\/\d+\/status$/.test(path)) {
+        // The location name lives here (matched by session id), as on a real Engine.
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ result: { sessions: opts.statusSessions ?? [] } }));
+        return;
+      }
       if (req.method === 'POST' && path === '/api/v4/data/timeseries') {
         res.writeHead(injectionStatus, { 'content-type': 'application/json' });
         res.end(JSON.stringify(injectionStatus === 200 ? { result: {} } : { error: 'forced' }));
@@ -93,6 +104,7 @@ export async function startBlazeMeterServer(opts: BlazeMeterServerOptions): Prom
     url: `http://127.0.0.1:${port}`,
     requests,
     sessionRequests: () => requests.filter((r) => r.method === 'GET' && r.path.startsWith('/api/v4/sessions/')),
+    statusRequests: () => requests.filter((r) => r.method === 'GET' && /^\/api\/v4\/masters\/\d+\/status$/.test(r.path)),
     injectionRequests: () => requests.filter((r) => r.method === 'POST' && r.path === '/api/v4/data/timeseries'),
     close: () =>
       new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),

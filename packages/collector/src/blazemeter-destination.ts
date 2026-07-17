@@ -225,7 +225,10 @@ export class BlazeMeterDestination implements Destination {
   private readonly killed: boolean;
   private readonly apiBase: string;
   private readonly profileName: string;
-  private readonly location: string;
+  /** Location tier. Seeded from env (override / loc-{index}), upgraded to the real
+   *  BlazeMeter location name from the master status in init() unless env set it explicitly. */
+  private location: string;
+  private readonly locationExplicit: boolean;
   private readonly engine: string;
   private readonly sessionId: string | undefined;
   private readonly masterIdOverride: number | null;
@@ -241,6 +244,7 @@ export class BlazeMeterDestination implements Destination {
     this.apiBase = (env.BLAZEMETER_API_BASE?.trim() || DEFAULT_API_BASE).replace(/\/+$/, '');
     this.profileName = env.BZM_VITALS_PROFILE?.trim() || DEFAULT_PROFILE;
     this.location = resolveLocation(env);
+    this.locationExplicit = Boolean(env.BZM_VITALS_LOCATION?.trim() || env.LOCATION?.trim());
     this.engine = resolveEngine(env);
     this.sessionId = env.SESSION_ID?.trim() || undefined;
     this.masterIdOverride = coerceMasterId(env.BLAZEMETER_MASTER_ID);
@@ -254,23 +258,51 @@ export class BlazeMeterDestination implements Destination {
     return this.masterIdOverride !== null || this.sessionId !== undefined;
   }
 
-  /** Resolve the masterId once. Override wins; else GET the session. Off on any failure. */
+  /**
+   * Resolve identity once. masterId: override wins, else GET the session. Off on any
+   * failure. Then best-effort upgrade the location tier to the real BlazeMeter location
+   * name (LOCATION is absent on the Engine and GET /sessions returns a null locationId —
+   * the name only lives in the master status, matched by our own SESSION_ID).
+   */
   async init(): Promise<boolean> {
     if (this.masterIdOverride !== null) {
       this.masterId = this.masterIdOverride;
-      return true;
+    } else {
+      if (this.sessionId === undefined || this.creds === null) return false;
+      try {
+        const res = await this.request('GET', `/api/v4/sessions/${this.sessionId}`);
+        if (!res.ok) return false;
+        const body = (await res.json()) as { result?: { masterId?: unknown } };
+        const resolved = coerceMasterId(body?.result?.masterId);
+        if (resolved === null) return false;
+        this.masterId = resolved;
+      } catch {
+        return false; // network/timeout — the pusher isolates; nothing is retried
+      }
     }
-    if (this.sessionId === undefined || this.creds === null) return false;
+    await this.upgradeLocationFromStatus();
+    return true;
+  }
+
+  /**
+   * Replace the env-derived location tier with the real BlazeMeter location name
+   * (e.g. "us-west-1") read from GET /masters/{masterId}/status — the same source the
+   * dashboard uses. Skipped when the operator set the location explicitly; best-effort,
+   * so a failure or a not-yet-assigned locationId keeps the env-derived fallback.
+   */
+  private async upgradeLocationFromStatus(): Promise<void> {
+    if (this.locationExplicit || this.masterId === null || this.sessionId === undefined) return;
     try {
-      const res = await this.request('GET', `/api/v4/sessions/${this.sessionId}`);
-      if (!res.ok) return false;
-      const body = (await res.json()) as { result?: { masterId?: unknown } };
-      const resolved = coerceMasterId(body?.result?.masterId);
-      if (resolved === null) return false;
-      this.masterId = resolved;
-      return true;
+      const res = await this.request('GET', `/api/v4/masters/${this.masterId}/status`);
+      if (!res.ok) return;
+      const body = (await res.json()) as {
+        result?: { sessions?: Array<{ id?: string; locationId?: unknown }> };
+      };
+      const mine = (body?.result?.sessions ?? []).find((s) => s.id === this.sessionId);
+      const loc = typeof mine?.locationId === 'string' ? mine.locationId.trim() : '';
+      if (loc) this.location = loc;
     } catch {
-      return false; // network/timeout — the pusher isolates; nothing is retried
+      // keep the env-derived fallback (loc-{index} / override / unknown-location)
     }
   }
 

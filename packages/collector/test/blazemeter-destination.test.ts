@@ -90,7 +90,7 @@ describe('init — masterId resolution, lazy and bounded', () => {
       fetch,
     });
     expect(await d.init()).toBe(true);
-    expect(calls).toHaveLength(1);
+    // The resolution GET comes first (a status GET for the location follows it).
     expect(calls[0]!.url).toBe('https://api.example.com/api/v4/sessions/r-v4-xyz');
     expect(calls[0]!.method).toBe('GET');
     expect(calls[0]!.headers.Authorization).toBe(EXPECTED_AUTH);
@@ -167,6 +167,45 @@ describe('send — the injection POST', () => {
     const { d, calls } = await liveDestination({ BLAZEMETER_MASTER_ID: '1' }, () => ({}));
     await d.send([sample({ cls: { value: null, status: 'unsupported' } })]);
     expect(calls.filter((c) => c.method === 'POST')).toEqual([]);
+  });
+
+  it('resolves the real location name from /masters/{id}/status matched by SESSION_ID', async () => {
+    const { fetch, calls } = fakeFetch((url) => {
+      if (url.includes('/sessions/')) return { json: { result: { masterId: 500 } } };
+      if (url.endsWith('/status')) {
+        return { json: { result: { sessions: [{ id: 'other', locationId: 'eu-1' }, { id: 'r-v4-me', locationId: 'us-west-1' }] } } };
+      }
+      return {};
+    });
+    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-me', TAURUS_SESSIONS_INDEX: '1' }, fetch });
+    await d.init();
+    await d.send([sample({ lcp: { value: 100, status: 'ok' } })]);
+    const post = calls.find((c) => c.method === 'POST')!;
+    const path = (post.body as { intervals: Array<{ _id: { metricPath: string } }> }).intervals[0]!._id.metricPath;
+    expect(path).toBe('Web Vitals | us-west-1 | #1 | /order/9 | LCP');
+  });
+
+  it('an explicit LOCATION override wins and the status endpoint is never called', async () => {
+    const { fetch, calls } = fakeFetch((url) => (url.includes('/sessions/') ? { json: { result: { masterId: 1 } } } : {}));
+    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-me', LOCATION: 'my-loc' }, fetch });
+    await d.init();
+    expect(calls.some((c) => c.url.endsWith('/status'))).toBe(false);
+    await d.send([sample({ ttfb: { value: 1, status: 'ok' } })]);
+    const path = (calls.find((c) => c.method === 'POST')!.body as { intervals: Array<{ _id: { metricPath: string } }> }).intervals[0]!._id.metricPath;
+    expect(path).toContain(' | my-loc | ');
+  });
+
+  it('falls back to loc-{TAURUS_LOCATIONS_INDEX} when status carries no usable locationId', async () => {
+    const { fetch, calls } = fakeFetch((url) => {
+      if (url.includes('/sessions/')) return { json: { result: { masterId: 1 } } };
+      if (url.endsWith('/status')) return { json: { result: { sessions: [{ id: 'r-v4-me', locationId: null }] } } };
+      return {};
+    });
+    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-me', TAURUS_LOCATIONS_INDEX: '2' }, fetch });
+    await d.init();
+    await d.send([sample({ ttfb: { value: 1, status: 'ok' } })]);
+    const path = (calls.find((c) => c.method === 'POST')!.body as { intervals: Array<{ _id: { metricPath: string } }> }).intervals[0]!._id.metricPath;
+    expect(path).toContain(' | loc-2 | ');
   });
 
   it('honours BZM_VITALS_PROFILE for the profileName', async () => {
