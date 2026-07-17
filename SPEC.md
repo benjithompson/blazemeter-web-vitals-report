@@ -372,25 +372,43 @@ This is the **highest possible seam** — it is literally the tester's entry poi
 
 ### Seam 2 — the dashboard: the CLI end-to-end, asserting the embedded JSON
 
-Run the CLI with the BlazeMeter HTTP calls stubbed and **real zip bytes as fixtures** (the `artifacts (17)` bundle and the two-Engine probe run — both real, both already carrying the collision). Then parse the JSON data blob the HTML **must embed anyway** (the 20-min `dataUrl` expiry forces it) back out of the emitted file, and assert on that.
+Run the CLI with the BlazeMeter HTTP calls stubbed and **real zip bytes as fixtures**. Then parse the JSON data blob the HTML **must embed anyway** (the 20-min `dataUrl` expiry forces it) back out of the emitted file, and assert on that.
+
+#### Where the fixture bytes come from
+
+**Artifacts are not committed wholesale — they are re-fetchable from the API** (user's call). Archiving is a storage tier, not an expiry, so a Report's zips stay reachable long after the run: master `82280099` was still fetchable at 48 days old. A committed 375-file bundle would be a stale copy of something the API already serves, and the demo bundle additionally carries real customer performance data that has no business in a repo.
+
+So fixtures arrive three ways, by deliberate split:
+
+**1. Fetch script → gitignored cache.** A documented script walks the API chain and drops each Report's zips into a local cache keyed by master id. Tests read the cache; they never hit the network themselves. Re-runnable by anyone with account access, so the corpus is reproducible rather than archaeological.
+
+**2. One committed fixture: the probe run's two Engine zips, stripped to attachments only.** ~23 entries each, a few KB, and it is the **only** fixture the `sessionId`-namespacing test can be built on — it carries the byte-identical colliding filenames as real bytes. It is committed rather than fetched for three reasons: the collision test is the one that prevents a failure this codebase has already suffered **twice**, so it must not depend on account access, network, or a retention tier; the probe is **plumbing-only**, so it carries no customer data; and retention is **plan-tiered** (1 week → unlimited), so "fetch it later" is a bet on a tier nobody has checked.
+
+> **Do not synthesize the colliding zip pair instead.** Constructing two zips with matching filenames would test our belief about how the collision works rather than the collision. This map's record is that reasoning is exactly what got it wrong — repeatedly, and always plausibly. The bytes are real and they are three kilobytes; keep them.
+
+**3. Distilled known-answer values, committed as data.** The real 50-Sample aggregates below are small, permanent, and independent of any zip — they pin the arithmetic even when no cache exists.
+
+**Consequence to accept:** with an empty cache, the tests that need a full Report **skip loudly** rather than pass vacuously. A skipped test that says why is honest; a green suite that silently tested nothing is this project's signature failure, and it must not be reproduced in its own test harness. The collision test and the arithmetic tests never skip — they own their fixtures.
+
+#### What it covers
 
 This keeps the dashboard to **one seam and no new interface** — the embedded blob is a real product requirement, not a test hook. What it covers:
 
 - The full chain: sessions enumerated (never assume exactly one), `artifacts.zip` picked from `/reports/logs`, bytes fetched.
-- **Extraction is namespaced by `sessionId`** — the load-bearing test. Feed it the two-Engine probe fixture whose Engines emit byte-identical filenames and assert **both** Engines' Samples survive. This test exists because the failure it prevents has already happened twice in this codebase.
+- **Extraction is namespaced by `sessionId`** — the load-bearing test, and the one that never skips. Feed it the committed probe fixture whose two Engines emit byte-identical filenames and assert **both** Engines' Samples survive. This test exists because the failure it prevents has already happened twice in this codebase.
 - Attributed Samples carry `masterId` / `sessionId` / `locationId` stamped at fetch.
 - Pooling is over `sessionId` and `repeat`; percentiles computed once over pooled raw Samples.
 - p75 leads; **no mean** appears anywhere in the model.
 - Coverage accompanies every aggregate, with the right denominator.
 - `status != ok` is excluded from percentiles and **never pooled as 0**.
-- Cold Starts are identified as first-`ts`-per-(`sessionId`, `workerIndex`) and labelled, not trimmed. The real bundle's five are a known-answer fixture.
+- Cold Starts are identified as first-`ts`-per-(`sessionId`, `workerIndex`) and labelled, not trimmed. The demo Report's five are a known-answer value (below), so this one holds without a cache.
 - Failed Executions included by default; the exclude toggle changes the numbers in the expected direction.
-- The legacy adapter maps `performance-audit-*.json` with missing metrics as `unknown` — asserted against the real 50-Sample bundle.
+- The legacy adapter maps `performance-audit-*.json` with missing metrics as `unknown` — asserted against the demo 50-Sample Report (cached).
 - Partial states: a session with no artifact is listed as *no artifact*; a Report with zero vitals files yields **"no samples"**, never `0`.
 - **The emitted HTML makes zero external requests and contains no credentials** — assert on the file's bytes.
 - Engine Label ordinals (`us-west-1 #1`).
 
-Known-answer fixtures from the real bundle make several assertions exact rather than approximate: LCP `mean 2218.4 · p50 2152 · p75 2276 · p95 3120 · max 3364`; INP `no-interaction` on 50 of 50; CLS `0.00059` ×35, `0.00062` ×6, `0` ×9; 4 failed Executions, all CWV budget.
+**Known-answer values, committed as data** (fixture kind 3 — no zip needed): LCP `mean 2218.4 · p50 2152 · p75 2276 · p95 3120 · max 3364`; INP `no-interaction` on 50 of 50; CLS `0.00059` ×35, `0.00062` ×6, `0` ×9; 4 failed Executions, all CWV budget; the five Cold Starts are `repeat0..4`, ~45% inflated. These make the arithmetic assertions **exact rather than approximate**, and they survive the cache being empty — which is the point of distilling them. The prototype's 50-Sample extract already carries them.
 
 ### Seam 3 — the format-drift guard
 
@@ -399,12 +417,12 @@ Known-answer fixtures from the real bundle make several assertions exact rather 
 ### Not tested, deliberately
 
 - **Rendering geometry.** The prototype found a real layout bug (CLS axis labels colliding, since 41 of 50 Samples share a value) by being *looked at*, not asserted. A colour/contrast validator catches colour; nothing cheap catches geometry. Look at it; don't write a test that pretends to.
-- **Live BlazeMeter API calls in the test suite.** Stub the HTTP; the real chain is verified by the one-off empirical checks named below.
+- **Live BlazeMeter API calls in the test suite.** Stub the HTTP — a suite that needs an account and a network is a suite that gets skipped. The real chain is exercised instead by the **fetch script**, which is run by hand and whose failure is loud and immediate. That is the honest division: the script proves the chain works against the live API; the tests prove the dashboard works against the bytes the chain returns.
 
 ### Two empirical checks that are not unit tests
 
 1. **Does a published npm dep resolve on a BlazeMeter Engine?** Strongly evidenced, unproven. Confirm once with a real published dep before relying on it — a failure surfaces at run time on the Engine, where it would probably fail quietly.
-2. **Does the multi-Engine layout hold on real multi-Engine data?** Fetch master `82280099`'s four zips and look, before trusting the layout.
+2. **Does the multi-Engine layout hold on real multi-Engine data?** Point the fetch script at master `82280099` (four Engines, four continents), render it, and **look** — before trusting the layout. This is the script's first real job, and a good reason to write it early rather than at test time.
 
 ## Out of Scope
 
