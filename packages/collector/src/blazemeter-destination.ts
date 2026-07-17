@@ -134,11 +134,21 @@ export interface Credentials {
   secret: string;
 }
 
-/** api-key id/secret — the DISCRETE vars only. The file-path BLAZEMETER_API_KEY form is
- *  a local convenience and irrelevant on an Engine, so it is deliberately ignored here. */
+/**
+ * api-key id/secret — the DISCRETE vars, from either of two sources, in order:
+ *   1. BLAZEMETER_API_KEY_ID / BLAZEMETER_API_KEY_SECRET — set directly (local / CI).
+ *   2. BZM_SECRET_BLAZEMETER_API_KEY_ID / BZM_SECRET_BLAZEMETER_API_KEY_SECRET — the
+ *      form a BlazeMeter Vault secret takes on the Engine: a secret referenced from the
+ *      Taurus `secrets:` list is exposed to the worker as `BZM_SECRET_<secret name>`, so
+ *      naming the two Vault secrets `BLAZEMETER_API_KEY_ID` / `BLAZEMETER_API_KEY_SECRET`
+ *      makes them resolve here with the key never written into config.yml or any artifact.
+ * The file-path BLAZEMETER_API_KEY form is a local convenience, irrelevant on an Engine
+ * and deliberately ignored. `process.env` is still never serialized — only these named
+ * values are read, and only into the Authorization header.
+ */
 export function readDiscreteCredentials(env: Env): Credentials | null {
-  const id = env.BLAZEMETER_API_KEY_ID;
-  const secret = env.BLAZEMETER_API_KEY_SECRET;
+  const id = env.BLAZEMETER_API_KEY_ID || env.BZM_SECRET_BLAZEMETER_API_KEY_ID;
+  const secret = env.BLAZEMETER_API_KEY_SECRET || env.BZM_SECRET_BLAZEMETER_API_KEY_SECRET;
   if (id && secret) return { id, secret };
   return null;
 }

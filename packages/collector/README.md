@@ -120,6 +120,20 @@ or `playwright.config.ts` change is needed. Optional knobs, all via env:
 The credential travels only in the `Authorization` header and is never written
 to any Sample, log, or artifact.
 
+**Keeping the key out of `config.yml`:** use [BlazeMeter Vault
+secrets](https://help.blazemeter.com) instead of putting the key in an uploaded
+file. Store two secrets named `BLAZEMETER_API_KEY_ID` and
+`BLAZEMETER_API_KEY_SECRET`, reference them from the Taurus config, and the
+Engine exposes them to the worker as `BZM_SECRET_BLAZEMETER_API_KEY_ID` /
+`BZM_SECRET_BLAZEMETER_API_KEY_SECRET` — which the collector reads automatically:
+
+```yaml
+vault-integration: <your-vault-id>
+secrets:
+  - BLAZEMETER_API_KEY_ID
+  - BLAZEMETER_API_KEY_SECRET
+```
+
 ## 🔴 Keep your API key out of git
 
 The collector needs no credentials. The **dashboard** does, and BlazeMeter API

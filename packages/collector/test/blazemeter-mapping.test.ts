@@ -203,4 +203,29 @@ describe('env readers — activation and identity, all from named vars only', ()
     // The file-path form is local-only and deliberately ignored on an Engine.
     expect(readDiscreteCredentials({ BLAZEMETER_API_KEY: '/tmp/key.json' })).toBeNull();
   });
+
+  it('readDiscreteCredentials also reads the BlazeMeter Vault BZM_SECRET_ forms', () => {
+    // A Vault secret named BLAZEMETER_API_KEY_ID reaches the worker as this env var.
+    expect(
+      readDiscreteCredentials({
+        BZM_SECRET_BLAZEMETER_API_KEY_ID: 'vk',
+        BZM_SECRET_BLAZEMETER_API_KEY_SECRET: 'vs',
+      }),
+    ).toEqual({ id: 'vk', secret: 'vs' });
+    // Direct vars win when both sources are present.
+    expect(
+      readDiscreteCredentials({
+        BLAZEMETER_API_KEY_ID: 'direct-id',
+        BLAZEMETER_API_KEY_SECRET: 'direct-secret',
+        BZM_SECRET_BLAZEMETER_API_KEY_ID: 'vault-id',
+        BZM_SECRET_BLAZEMETER_API_KEY_SECRET: 'vault-secret',
+      }),
+    ).toEqual({ id: 'direct-id', secret: 'direct-secret' });
+    // Still all-or-nothing across the mixed sources.
+    expect(readDiscreteCredentials({ BZM_SECRET_BLAZEMETER_API_KEY_ID: 'vk' })).toBeNull();
+    // A direct id can pair with a Vault secret (and vice-versa).
+    expect(
+      readDiscreteCredentials({ BLAZEMETER_API_KEY_ID: 'k', BZM_SECRET_BLAZEMETER_API_KEY_SECRET: 'vs' }),
+    ).toEqual({ id: 'k', secret: 'vs' });
+  });
 });
