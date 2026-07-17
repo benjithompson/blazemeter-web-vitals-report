@@ -26,4 +26,7 @@ dist-standalone/
 packages/collector/upload-kit/bzm-playwright-vitals.ts
 packages/collector/test/fixtures/bzm-playwright-vitals.ts
 
+# Throwaway live-Engine acceptance kit (scaffolded on demand; upload-only, never committed)
+packages/collector/acceptance-kit/
+
 *.tsbuildinfo
