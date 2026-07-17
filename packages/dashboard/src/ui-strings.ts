@@ -36,6 +36,14 @@ export const UI_STRINGS = {
   p95: 'p95',
   notCarried: 'not carried',
   ofWord: 'of',
+  testsWord: 'Tests',
+
+  // Outcome words (the breakdown line and per-Navigation flags)
+  passedWord: 'passed',
+  failedWord: 'failed',
+  timedOutWord: 'timed out',
+  skippedWord: 'skipped',
+  andWord: 'and',
 
   // Threshold band names (beside the dot for screen readers / tooltips)
   bandGood: 'good',

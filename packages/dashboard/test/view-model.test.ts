@@ -231,8 +231,9 @@ describe('view model — drill-down walks Route → Test → Engine → Navigati
     expect(b!.sampleCount).toBe(1);
     // Engine spread: per-Engine p75s side by side — shown, never adjudicated.
     // The pinned percentile method: sorted[floor((n-1)*q)] → n=2 gives sorted[0].
-    expect(a!.p75s.lcp).toBe(1000);
-    expect(b!.p75s.lcp).toBe(3000);
+    // Coverage accompanies every aggregate — the spread's cells included.
+    expect(a!.p75s.lcp).toEqual({ p75: 1000, ok: 2, total: 2 });
+    expect(b!.p75s.lcp).toEqual({ p75: 3000, ok: 1, total: 1 });
   });
 
   it('an Engine lists its Navigations ordered by ts, with Cold Start and Execution status', () => {

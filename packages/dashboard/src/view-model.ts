@@ -65,8 +65,9 @@ export interface EngineView {
   engineLabel: string;
   sampleCount: number;
   /** Per-metric p75 over this Engine's ok values in this Test group — the
-   *  spread, shown side by side, never adjudicated. null when nothing ok. */
-  p75s: Record<string, number | null>;
+   *  spread, shown side by side, never adjudicated. null when nothing ok.
+   *  Coverage rides along: a 3-of-50 Engine p75 must not read like 50-of-50. */
+  p75s: Record<string, { p75: number | null; ok: number; total: number }>;
   navigations: NavigationView[];
 }
 
@@ -361,12 +362,12 @@ export interface ReportView {
   timeline: TimelineView;
 }
 
-const LEGACY_KEY = ' legacy';
+const LEGACY_KEY = '\u0000legacy';
 
 function testKey(s: AttributedSample): string {
   const t = s.sample.test;
   if (t === null || t === undefined) return LEGACY_KEY;
-  return [t.file, t.title, t.project].join(' ');
+  return [t.file, t.title, t.project].join('\u0000');
 }
 
 /** Equal-width bins over [min, max]; a single-valued distribution (the real
@@ -444,10 +445,14 @@ function buildEngines(
   }
   const engines: EngineView[] = [];
   for (const [sessionId, samples] of bySession) {
-    const p75s: Record<string, number | null> = {};
+    const p75s: Record<string, { p75: number | null; ok: number; total: number }> = {};
     for (const name of metricNames) {
       const values = okValues(samples, name);
-      p75s[name] = values.length > 0 ? percentile(values, 0.75) : null;
+      p75s[name] = {
+        p75: values.length > 0 ? percentile(values, 0.75) : null,
+        ok: values.length,
+        total: samples.length,
+      };
     }
     const navigations: NavigationView[] = samples
       .map((s) => ({

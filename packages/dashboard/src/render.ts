@@ -463,9 +463,17 @@ function navigationRowHtml(nav: NavigationView, metricNames: string[]): string {
     nav.executionStatus === 'unavailable'
       ? `<span class="muted">${escapeHtml(S.outcomeUnavailable)}</span>`
       : nav.executionStatus === 'passed'
-        ? `<span class="muted">passed</span>`
+        ? `<span class="muted">${escapeHtml(S.passedWord)}</span>`
         : `<span class="flag bad">${escapeHtml(
-            nav.executionStatus === 'crashed' ? S.outcomeCrashedBeforeFinishing : nav.executionStatus,
+            nav.executionStatus === 'crashed'
+              ? S.outcomeCrashedBeforeFinishing
+              : nav.executionStatus === 'failed'
+                ? S.failedWord
+                : nav.executionStatus === 'timedOut'
+                  ? S.timedOutWord
+                  : nav.executionStatus === 'skipped'
+                    ? S.skippedWord
+                    : nav.executionStatus,
           )}</span>`;
   return (
     `<tr>` +
@@ -516,10 +524,16 @@ function engineSpreadHtml(group: TestGroupView, metricNames: string[]): string {
         )}">${escapeHtml(engine.engineLabel)}</td>` +
         metricNames
           .map((n) => {
-            const p75 = engine.p75s[n];
-            return `<td class="num">${
-              p75 === null || p75 === undefined ? '—' : escapeHtml(fmtValue(n, p75))
-            }</td>`;
+            const agg = engine.p75s[n];
+            const value =
+              agg === undefined || agg.p75 === null ? '—' : escapeHtml(fmtValue(n, agg.p75));
+            // Coverage accompanies every aggregate — a 3-of-50 Engine p75 must
+            // not read like a 50-of-50 one.
+            const coverage =
+              agg === undefined
+                ? ''
+                : `<div class="coverage">${escapeHtml(`${agg.ok} ${S.ofWord} ${agg.total}`)}</div>`;
+            return `<td class="num">${value}${coverage}</td>`;
           })
           .join('') +
         `</tr>`,
@@ -551,7 +565,7 @@ function drillHtml(
   colSpan: number,
 ): string {
   const blendNote = route.blended
-    ? `<p class="blend-note">${escapeHtml(`${route.testCount} Tests — ${S.blendCaveat}`)}</p>`
+    ? `<p class="blend-note">${escapeHtml(`${route.testCount} ${S.testsWord} — ${S.blendCaveat}`)}</p>`
     : '';
   const histos =
     route.histograms.length > 0
@@ -635,19 +649,19 @@ function outcomeLineText(summary: OutcomeSummary): string {
   // The itemization of the FAILED head-count only; skipped is not a failure
   // and is appended separately so it never reads as part of the head-count.
   const parts: string[] = [];
-  if (c['failed']) parts.push(`${c['failed']} failed`);
-  if (c['timedOut']) parts.push(`${c['timedOut']} timed out`);
+  if (c['failed']) parts.push(`${c['failed']} ${S.failedWord}`);
+  if (c['timedOut']) parts.push(`${c['timedOut']} ${S.timedOutWord}`);
   if (c['crashed']) parts.push(`${c['crashed']} ${S.outcomeCrashedBeforeFinishing}`);
-  const skippedSuffix = c['skipped'] ? ` (and ${c['skipped']} skipped)` : '';
+  const skippedSuffix = c['skipped'] ? ` (${S.andWord} ${c['skipped']} ${S.skippedWord})` : '';
   if (summary.excludable > 0) {
-    const head = `${summary.excludable} ${S.ofWord} ${summary.total} ${S.executionsWord} failed`;
+    const head = `${summary.excludable} ${S.ofWord} ${summary.total} ${S.executionsWord} ${S.failedWord}`;
     const onlyPlainFailed = parts.length === 1 && (c['failed'] ?? 0) === summary.excludable;
     return (onlyPlainFailed ? head : `${head} — ${parts.join(' · ')}`) + skippedSuffix;
   }
   if (c['skipped']) {
-    return `${c['passed'] ?? 0} ${S.ofWord} ${summary.total} ${S.executionsWord} passed — ${c['skipped']} skipped`;
+    return `${c['passed'] ?? 0} ${S.ofWord} ${summary.total} ${S.executionsWord} ${S.passedWord} — ${c['skipped']} ${S.skippedWord}`;
   }
-  return `all ${summary.total} ${S.executionsWord} passed`;
+  return `all ${summary.total} ${S.executionsWord} ${S.passedWord}`;
 }
 
 /** The visible control. Include is the DEFAULT (checked). When there is
