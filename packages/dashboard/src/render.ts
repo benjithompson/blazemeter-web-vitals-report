@@ -27,6 +27,7 @@ import type { ReportData } from './report.js';
 import { UI_STRINGS as S } from './ui-strings.js';
 import {
   buildView,
+  xFraction,
   type EngineView,
   type HistogramView,
   type MetricCell,
@@ -34,6 +35,9 @@ import {
   type ReportView,
   type RouteView,
   type TestGroupView,
+  type TimelineAxis,
+  type TimelineChart,
+  type TimelineView,
 } from './view-model.js';
 import type { ThresholdBand } from './thresholds.js';
 
@@ -206,6 +210,231 @@ function histogramHtml(histo: HistogramView): string {
       fmtValue(histo.metric, histo.min),
     )}</span><span>${escapeHtml(fmtValue(histo.metric, histo.max))}</span></div>` +
     `</figure>`
+  );
+}
+
+// ---------------------------------------------------------------- timeline
+//
+// The wall-clock timeline (issue #8) — everything here is GEOMETRY over the
+// precomputed TimelineView; the model (axis union, ticks, points, p75, y
+// domain) is decided and tested in view-model.ts. Scatter, deliberately: each
+// point is one Sample event, and connecting lines would invent a continuity
+// the data does not have (two Engines interleave; thin runs stay honest).
+//
+// The chart renderer walks chart.series — N series on the ONE shared axis —
+// so a foreign series later is one more loop iteration, not a rework.
+
+const TL_W = 860;
+const TL_PL = 56; // left pad: y tick labels
+const TL_PR = 14;
+const TL_PT = 12; // top pad: p75 label headroom
+const TL_PLOT_H = 120;
+const TL_AXIS_H = 24;
+const TL_H = TL_PT + TL_PLOT_H + TL_AXIS_H;
+
+function tlX(axis: TimelineAxis, ts: number): number {
+  return TL_PL + xFraction(axis, ts) * (TL_W - TL_PL - TL_PR);
+}
+
+function tlY(chart: TimelineChart, value: number): number {
+  return TL_PT + (1 - value / chart.yMax) * TL_PLOT_H;
+}
+
+/** Engine → categorical slot, in the API's session order — fixed, never cycled.
+ *  Past the 8 palette slots, later Engines share the de-emphasis ink (and stay
+ *  identified by tooltip); a 9th generated hue would break the CVD checks. */
+function engineSlots(view: ReportView): Map<string, number> {
+  const slots = new Map<string, number>();
+  view.sessions.forEach((session, i) => {
+    slots.set(session.sessionId, i < 8 ? i : -1);
+  });
+  return slots;
+}
+
+function slotClass(slot: number | undefined, multiEngine: boolean): string {
+  if (!multiEngine || slot === undefined || slot === -1) return 'pt-mono';
+  return `pt-s${slot}`;
+}
+
+/** A point marker: circle for a Sample, diamond for a Cold Start (a SHAPE, so
+ *  the flag survives color-blindness and never depends on hue). null coldStart
+ *  (legacy) draws a plain circle — the marker is never faked. */
+function tlMarker(x: number, y: number, cls: string, coldStart: boolean, title: string): string {
+  const t = `<title>${escapeHtml(title)}</title>`;
+  const cx = x.toFixed(1);
+  const cy = y.toFixed(1);
+  if (coldStart) {
+    const d = `M${cx},${(y - 6).toFixed(1)} L${(x + 6).toFixed(1)},${cy} L${cx},${(y + 6).toFixed(
+      1,
+    )} L${(x - 6).toFixed(1)},${cy} Z`;
+    return `<path class="pt cold ${cls}" d="${d}">${t}</path>`;
+  }
+  return `<circle class="pt ${cls}" cx="${cx}" cy="${cy}" r="4">${t}</circle>`;
+}
+
+function timelineChartHtml(
+  chart: TimelineChart,
+  axis: TimelineAxis,
+  slots: Map<string, number>,
+  multiEngine: boolean,
+): string {
+  const heading = metricHeading(chart.metric);
+  const coverage = `${chart.okCount} ${S.ofWord} ${chart.total} ${S.samplesWord}`;
+
+  if (chart.okCount === 0) {
+    // Nothing measured: the reason in place of a chart, never an empty plot.
+    const reason = reasonLabel(chart.reason ?? 'invalid');
+    return `<div class="tl-reason">${escapeHtml(
+      `${heading} — ${reason} (${chart.okCount} ${S.ofWord} ${chart.total})`,
+    )}</div>`;
+  }
+
+  const plotRight = TL_W - TL_PR;
+  const baselineY = TL_PT + TL_PLOT_H;
+
+  // Horizontal gridlines + y tick labels (values precomputed in the model).
+  const yGrid = chart.yTicks
+    .map((v) => {
+      const y = tlY(chart, v).toFixed(1);
+      const label = v === 0 ? '0' : fmtBare(chart.metric, v);
+      return (
+        (v === 0 ? '' : `<line class="grid" x1="${TL_PL}" y1="${y}" x2="${plotRight}" y2="${y}"></line>`) +
+        `<text class="ylab" x="${TL_PL - 6}" y="${(Number(y) + 3).toFixed(1)}">${escapeHtml(label)}</text>`
+      );
+    })
+    .join('');
+
+  // Vertical gridlines + wall-clock tick labels; edge labels clamp inward so
+  // nothing clips at the svg boundary.
+  const xGrid = axis.ticks
+    .map((tick) => {
+      const x = tlX(axis, tick.ts);
+      const anchor = x < TL_PL + 24 ? 'start' : x > plotRight - 24 ? 'end' : 'middle';
+      return (
+        `<line class="grid" x1="${x.toFixed(1)}" y1="${TL_PT}" x2="${x.toFixed(1)}" y2="${baselineY}"></line>` +
+        `<text class="xlab" text-anchor="${anchor}" x="${x.toFixed(1)}" y="${baselineY + 15}">${escapeHtml(
+          tick.label,
+        )}</text>`
+      );
+    })
+    .join('');
+
+  // The run-level p75 reference line, labelled. The line sits UNDER the
+  // points; the label is drawn last (over them) with a surface halo so it
+  // stays legible where the data crowds the right edge. Label flips below
+  // the line when the line runs too close to the top edge.
+  let refLine = '';
+  let refLabel = '';
+  if (chart.p75 !== null) {
+    const y = tlY(chart, chart.p75);
+    const labelY = y - 5 < TL_PT + 6 ? y + 13 : y - 5;
+    refLine = `<line class="ref" x1="${TL_PL}" y1="${y.toFixed(1)}" x2="${plotRight}" y2="${y.toFixed(1)}"></line>`;
+    refLabel = `<text class="reflab" text-anchor="end" x="${plotRight}" y="${labelY.toFixed(1)}">${escapeHtml(
+      `${S.p75} ${fmtValue(chart.metric, chart.p75)}`,
+    )}</text>`;
+  }
+
+  // N series through one loop; Cold Starts drawn last so the diamonds sit on
+  // top of any overlapping circles.
+  const plain: string[] = [];
+  const cold: string[] = [];
+  for (const series of chart.series) {
+    for (const p of series.points) {
+      const isCold = p.meta?.coldStart === true;
+      const time = new Date(p.ts).toISOString().slice(11, 23);
+      const title =
+        `${time} UTC · ${fmtValue(chart.metric, p.value)}` +
+        (p.meta?.engineLabel ? ` · ${p.meta.engineLabel}` : '') +
+        (isCold ? ` · ${S.coldStartFlag}` : '') +
+        (p.meta?.url ? `\n${p.meta.url}` : '');
+      const marker = tlMarker(
+        tlX(axis, p.ts),
+        tlY(chart, p.value),
+        slotClass(p.meta?.sessionId !== undefined ? slots.get(p.meta.sessionId) : undefined, multiEngine),
+        isCold,
+        title,
+      );
+      (isCold ? cold : plain).push(marker);
+    }
+  }
+
+  const unit = chart.unit === 'unitless' ? S.unitlessWord : chart.unit;
+  return (
+    `<figure class="tl">` +
+    `<figcaption>${escapeHtml(heading)} <span class="muted">${escapeHtml(
+      `${unit} · ${coverage}`,
+    )}</span></figcaption>` +
+    `<svg viewBox="0 0 ${TL_W} ${TL_H}" role="img" aria-label="${escapeHtml(
+      `${heading} — ${S.timelineChartAria}`,
+    )}">` +
+    yGrid +
+    xGrid +
+    `<line class="axisline" x1="${TL_PL}" y1="${baselineY}" x2="${plotRight}" y2="${baselineY}"></line>` +
+    refLine +
+    plain.join('') +
+    cold.join('') +
+    refLabel +
+    `</svg>` +
+    `</figure>`
+  );
+}
+
+/** The legend: Engine hues only when >1 Engine contributed points (a single-
+ *  Engine run needs no legend — the note names what is plotted); the Cold
+ *  Start diamond appears exactly when a true flag exists somewhere. */
+function timelineLegendHtml(
+  timeline: TimelineView,
+  view: ReportView,
+  slots: Map<string, number>,
+): string {
+  const contributing = new Set<string>();
+  for (const chart of timeline.charts) {
+    for (const series of chart.series) {
+      for (const p of series.points) if (p.meta?.sessionId !== undefined) contributing.add(p.meta.sessionId);
+    }
+  }
+  const entries: string[] = [];
+  if (view.multiEngine) {
+    for (const session of view.sessions) {
+      if (!contributing.has(session.sessionId)) continue;
+      const cls = slotClass(slots.get(session.sessionId), true);
+      entries.push(
+        `<span class="key" title="${escapeHtml(session.sessionId)}">` +
+          `<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><circle class="pt ${cls}" cx="6" cy="6" r="4.5"></circle></svg>` +
+          ` ${escapeHtml(session.engineLabel)}</span>`,
+      );
+    }
+  }
+  if (timeline.charts.some((c) => c.coldStartCount > 0)) {
+    const cls = view.multiEngine ? 'pt-legend-cold' : 'pt-mono';
+    entries.push(
+      `<span class="key">` +
+        `<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path class="pt ${cls}" d="M7,1.5 L12.5,7 L7,12.5 L1.5,7 Z"></path></svg>` +
+        ` ${escapeHtml(S.coldStartFlag)}</span>`,
+    );
+  }
+  if (entries.length === 0) return '';
+  return `<div class="tl-legend">${entries.join('')}</div>`;
+}
+
+function timelineHtml(view: ReportView): string {
+  const timeline = view.timeline;
+  if (timeline.charts.length === 0) return ''; // zero Samples: the table already said so
+  const slots = engineSlots(view);
+  const charts = timeline.charts
+    .map((chart) =>
+      timeline.axis === null
+        ? timelineChartHtml(chart, { minTs: 0, maxTs: 0, ticks: [] }, slots, view.multiEngine)
+        : timelineChartHtml(chart, timeline.axis, slots, view.multiEngine),
+    )
+    .join('');
+  return (
+    `<section class="timeline">` +
+    `<h2>${escapeHtml(S.timelineHeading)}<span class="badge">${escapeHtml(S.labData)}</span></h2>` +
+    `<p class="note">${escapeHtml(S.timelineNote)}</p>` +
+    timelineLegendHtml(timeline, view, slots) +
+    charts +
+    `</section>`
   );
 }
 
@@ -430,6 +659,8 @@ const STYLE = `
     --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
     --series-1: #2a78d6;
     --band-good: #0ca30c; --band-ni: #fab219; --band-poor: #d03b3b;
+    --cat-1: #2a78d6; --cat-2: #008300; --cat-3: #e87ba4; --cat-4: #eda100;
+    --cat-5: #1baf7a; --cat-6: #eb6834; --cat-7: #4a3aa7; --cat-8: #e34948;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -437,6 +668,8 @@ const STYLE = `
       --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
       --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
       --series-1: #3987e5;
+      --cat-1: #3987e5; --cat-2: #008300; --cat-3: #d55181; --cat-4: #c98500;
+      --cat-5: #199e70; --cat-6: #d95926; --cat-7: #9085e9; --cat-8: #e66767;
     }
   }
   * { box-sizing: border-box; }
@@ -528,6 +761,35 @@ const STYLE = `
   .spread { margin: 0.4rem 0 0.6rem; }
 
   .no-samples { font-size: 1.05rem; color: var(--band-poor); }
+
+  section.timeline figure.tl { margin: 0 0 1.1rem; }
+  .tl figcaption { font-size: 0.78rem; font-weight: 600; color: var(--ink-2); margin-bottom: 0.25rem; }
+  .tl svg {
+    display: block; width: 100%; max-width: ${TL_W}px; height: auto;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .tl .grid { stroke: var(--grid); stroke-width: 1; }
+  .tl .axisline { stroke: var(--baseline); stroke-width: 1; }
+  .tl .ylab, .tl .xlab { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .tl .ylab { text-anchor: end; }
+  .tl .ref { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 4 3; }
+  .tl .reflab {
+    fill: var(--ink-2); font-size: 10px; font-variant-numeric: tabular-nums;
+    paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round;
+  }
+  .pt { stroke: var(--surface); stroke-width: 2; }
+  .pt-mono { fill: var(--series-1); }
+  .pt-s0 { fill: var(--cat-1); } .pt-s1 { fill: var(--cat-2); }
+  .pt-s2 { fill: var(--cat-3); } .pt-s3 { fill: var(--cat-4); }
+  .pt-s4 { fill: var(--cat-5); } .pt-s5 { fill: var(--cat-6); }
+  .pt-s6 { fill: var(--cat-7); } .pt-s7 { fill: var(--cat-8); }
+  .pt-legend-cold { fill: var(--ink-2); }
+  .tl-legend {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
+    font-size: 0.75rem; color: var(--ink-2); margin: 0.35rem 0 0.85rem;
+  }
+  .tl-legend .key svg { vertical-align: -2px; }
+  .tl-reason { font-size: 0.85rem; color: var(--muted); margin: 0.4rem 0 1rem; }
 `;
 
 /** Render the whole report as one self-contained HTML document. */
@@ -554,6 +816,7 @@ ${enginesHtml(view)}
 <h2>${escapeHtml(S.routesHeading)}<span class="badge">${escapeHtml(S.labData)}</span></h2>
 ${routeTableHtml(view)}
 </section>
+${timelineHtml(view)}
 <script type="application/json" id="${DATA_BLOB_ID}">${embedJson(data)}</script>
 <script>${INLINE_SCRIPT}</script>
 </body>

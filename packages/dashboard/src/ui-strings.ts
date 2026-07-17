@@ -58,6 +58,13 @@ export const UI_STRINGS = {
   outcomeCrashed: 'crashed',
   binTooltipSuffix: 'Samples',
   histogramEmptyNote: 'distribution over measured Samples in this Route',
+
+  // Timeline — vitals over the run's wall-clock (below the Route table)
+  timelineHeading: 'Timeline',
+  timelineNote:
+    'one point per measured Sample, at absolute wall-clock time (UTC) — Samples with nothing measured are not plotted',
+  timelineChartAria: 'measured Samples over wall-clock time (UTC)',
+  unitlessWord: 'unitless',
 } as const;
 
 export type UiStringKey = keyof typeof UI_STRINGS;
