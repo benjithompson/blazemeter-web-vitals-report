@@ -78,6 +78,7 @@ function reportData(raw: AttributedSample[], outcomes: AttributedOutcome[] = [])
   }
   return {
     masterId: '90000001',
+    reportName: null,
     generatedAt: '2026-07-16T00:00:00.000Z',
     sessions: [...seen.entries()].map(([id, v]) => sessionSummary(id, v.locationId, v.engineLabel)),
     routes: aggregateRoutes(samples),

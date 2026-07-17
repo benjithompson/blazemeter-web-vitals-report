@@ -35,6 +35,32 @@ interface LogsEnvelope {
   result?: { data?: Array<{ filename?: string; dataUrl?: string }> };
 }
 
+interface MasterEnvelope {
+  result?: { name?: string };
+}
+
+/**
+ * GET /masters/{id} → the master (Report) object. result.name is the
+ * execution/report name the user typed when creating the test — it can drift
+ * from the test's own name if the test was later renamed. Returns null when the
+ * API carries no name, so the caller falls back honestly to the master id.
+ */
+export async function getMaster(
+  masterId: string,
+  opts: ApiOptions,
+): Promise<{ name: string | null }> {
+  const transport = opts.transport ?? defaultTransport;
+  const res = await transport(`${BASE}/api/v4/masters/${masterId}`, {
+    headers: { Authorization: basicAuthHeader(opts.creds) },
+  });
+  if (!res.ok) {
+    throw new Error(`GET /masters/${masterId} failed: ${res.status}`);
+  }
+  const body = (await res.json()) as MasterEnvelope;
+  const name = body.result?.name;
+  return { name: name ? String(name) : null };
+}
+
 /** GET /masters/{id}/status → the session list. Always returns every session. */
 export async function listSessions(
   masterId: string,

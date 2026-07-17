@@ -49,6 +49,9 @@ export interface SessionSummary {
 /** Everything the emitted HTML embeds. Issue #7 extends this shape. */
 export interface ReportData {
   masterId: string;
+  /** The Report's name (GET /masters/{id} → result.name); null when the API
+   *  carried none, so the header falls back to the master id. */
+  reportName: string | null;
   /** When this HTML was generated — not when the Report ran. */
   generatedAt: string;
   sessions: SessionSummary[];
@@ -156,6 +159,7 @@ export async function buildReportData(
 
   return {
     masterId: manifest.masterId,
+    reportName: manifest.reportName ?? null,
     generatedAt: new Date().toISOString(),
     sessions,
     routes: aggregateRoutes(flagged),

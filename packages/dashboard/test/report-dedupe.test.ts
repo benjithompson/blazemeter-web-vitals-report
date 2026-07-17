@@ -66,6 +66,7 @@ describe('flattening-survivor deduplication', () => {
     const manifest: MasterManifest = {
       masterId: '82731327',
       fetchedAt: '2026-07-17T15:10:00.000Z',
+      reportName: null,
       sessions: [{ sessionId: SESSION, locationId: 'us-west-1', status: 'ENDED', artifact: 'present' }],
     };
     const data = await buildReportData(manifest, workDir);

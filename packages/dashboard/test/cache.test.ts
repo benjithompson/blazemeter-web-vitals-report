@@ -15,6 +15,10 @@ const LOGS_RE = /\/sessions\/([^/]+)\/reports\/logs$/;
 // Two Engines: aaa has an artifact, bbb died and emitted none.
 function twoEngineHandler(zipA: Buffer) {
   return (url: string) => {
+    // GET /masters/{id} (no /status) → the Report object, fetched cold.
+    if (/\/masters\/[^/]+$/.test(url)) {
+      return jsonResponse({ result: { name: 'Two-Engine run' } });
+    }
     if (STATUS_RE.test(url)) {
       return jsonResponse({
         result: {

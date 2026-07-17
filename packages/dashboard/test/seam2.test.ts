@@ -36,7 +36,11 @@ const STUB_ENV = {
   BLAZEMETER_API_KEY_SECRET: 'stub-key-secret-c41d97e2',
 } as NodeJS.ProcessEnv;
 
-function stubApi(masterId: string, zips: Record<string, { locationId: string; zip: Buffer }>) {
+function stubApi(
+  masterId: string,
+  zips: Record<string, { locationId: string; zip: Buffer }>,
+  masterName = 'Checkout journey — nightly',
+) {
   return recordingTransport((url) => {
     if (url.endsWith(`/masters/${masterId}/status`)) {
       return jsonResponse({
@@ -48,6 +52,11 @@ function stubApi(masterId: string, zips: Record<string, { locationId: string; zi
           })),
         },
       });
+    }
+    // GET /masters/{id} (no /status) → the Report object; result.name is the
+    // Report/test name the header shows in place of the bare master id.
+    if (url.endsWith(`/masters/${masterId}`)) {
+      return jsonResponse({ result: { name: masterName } });
     }
     const logs = /\/sessions\/([^/]+)\/reports\/logs$/.exec(url);
     if (logs) {
@@ -124,6 +133,8 @@ describe('Seam 2 — probe Report (real bytes, two Engines, zero Samples)', () =
 
     // Sessions enumerated — never assume exactly one.
     expect(data.masterId).toBe('82724289');
+    // The Report name (GET /masters/{id}) threaded through to the blob.
+    expect(data.reportName).toBe('Checkout journey — nightly');
     expect(data.sessions).toHaveLength(2);
     expect(data.sessions.map((s) => s.sessionId).sort()).toEqual([PROBE_A, PROBE_B].sort());
     expect(data.sessions.map((s) => s.locationId).sort()).toEqual(['us-west-1', 'us-west-2']);
@@ -219,6 +230,22 @@ describe('Seam 2 — canonical Samples across two Engines with colliding basenam
     // No Outcome records in these zips → outcome-awareness unavailable, and
     // that is never conflated with crashed.
     expect(data.samples.every((s) => s.executionStatus === 'unavailable')).toBe(true);
+  });
+
+  it('titles the report with the Report name and links to the live master report', async () => {
+    const html = await runSynthesized();
+
+    // The name threads all the way into the embedded blob (Seam 2's rule:
+    // parse it back out), then becomes the visible <title> and <h1> — in place
+    // of the bare master id the header used to show.
+    expect(parseBlob(html).reportName).toBe('Checkout journey — nightly');
+    expect(html).toContain('<title>Checkout journey — nightly</title>');
+    expect(html).toContain('<h1>Checkout journey — nightly</h1>');
+
+    // Under the title, a link to the actual Report on BlazeMeter, with the
+    // master id still surfaced (never lost when the title drops it).
+    expect(html).toContain('href="https://a.blazemeter.com/app/#/masters/90000001/summary"');
+    expect(html).toMatch(/Report 90000001/);
   });
 
   it('records the schemaVersion-mismatch file as rejected, with a reason', async () => {

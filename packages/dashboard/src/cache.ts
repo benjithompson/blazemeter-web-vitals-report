@@ -13,7 +13,7 @@
 import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { fetchArtifactBytes, listSessions, type SessionInfo } from './api.js';
+import { fetchArtifactBytes, getMaster, listSessions, type SessionInfo } from './api.js';
 import { extractNamespaced } from './extract.js';
 import type { Credentials, Transport } from './http.js';
 
@@ -32,6 +32,9 @@ export interface SessionCacheEntry {
 export interface MasterManifest {
   masterId: string;
   fetchedAt: string;
+  /** The master's (Report's) name from GET /masters/{id}; null when the API
+   *  carried none. Persisted so the warm cache renders offline, no refetch. */
+  reportName: string | null;
   sessions: SessionCacheEntry[];
 }
 
@@ -79,7 +82,9 @@ export async function cacheMaster(
     return existing;
   }
 
-  // Cold: enumerate sessions (there is at least one; never assume exactly one).
+  // Cold: fetch the Report name and enumerate sessions (there is at least one;
+  // never assume exactly one).
+  const master = await getMaster(masterId, opts);
   const sessions: SessionInfo[] = await listSessions(masterId, opts);
   const entries: SessionCacheEntry[] = [];
 
@@ -120,6 +125,7 @@ export async function cacheMaster(
   const manifest: MasterManifest = {
     masterId,
     fetchedAt: new Date().toISOString(),
+    reportName: master.name,
     sessions: entries,
   };
   await writeFile(

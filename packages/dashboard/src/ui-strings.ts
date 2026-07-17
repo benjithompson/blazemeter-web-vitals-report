@@ -10,6 +10,8 @@
 export const UI_STRINGS = {
   // Header
   title: 'Web Vitals — Report',
+  reportLink: 'open Report in BlazeMeter',
+  reportWord: 'Report',
   generated: 'generated',
   labData: 'lab data',
 

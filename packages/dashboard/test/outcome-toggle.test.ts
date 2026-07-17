@@ -116,6 +116,7 @@ function reportData(
   for (const s of raw) if (!seen.has(s.sessionId)) seen.set(s.sessionId, s.engineLabel);
   return {
     masterId: '90000001',
+    reportName: null,
     generatedAt: '2026-07-16T00:00:00.000Z',
     sessions: [
       ...[...seen.entries()].map(([id, label]) => sessionSummary(id, label)),

@@ -45,6 +45,14 @@ import type { ThresholdBand } from './thresholds.js';
 
 export const DATA_BLOB_ID = 'bzm-vitals-data';
 
+// The BlazeMeter Report (master) page. An <a href> is a user-initiated
+// navigation, never a fetch — the file stays self-contained (nothing is
+// requested to render it), and the link points at the live Report on demand.
+const REPORT_URL_BASE = 'https://a.blazemeter.com/app/#/masters';
+function masterReportUrl(masterId: string): string {
+  return `${REPORT_URL_BASE}/${masterId}/summary`;
+}
+
 // --------------------------------------------------------------- utilities
 
 function escapeHtml(text: string): string {
@@ -842,6 +850,9 @@ const STYLE = `
   h3 { font-size: 0.95rem; margin: 1.1rem 0 0.5rem; }
   h4 { font-size: 0.85rem; margin: 0.9rem 0 0.35rem; color: var(--ink-2); font-weight: 600; }
   .meta { color: var(--ink-2); font-size: 0.85rem; margin: 0; }
+  .report-link { font-size: 0.85rem; margin: 0 0 0.15rem; }
+  .report-link a { color: var(--series-1); text-decoration: none; }
+  .report-link a:hover { text-decoration: underline; }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -981,6 +992,10 @@ const STYLE = `
 export function renderHtml(data: ReportData): string {
   const variants = buildReportVariants(data);
   const view = variants.included;
+  // The Report name is the title; the master id stays visible in the link line
+  // beneath it, so the id is never lost. Falls back to the id when unnamed.
+  const heading = data.reportName ?? `${S.title} ${data.masterId}`;
+  const reportUrl = masterReportUrl(data.masterId);
   const engineCountLine =
     `${nSamples(view.totalSamples)}` +
     ` · ${view.engineCount} ${view.engineCount === 1 ? S.engineWord : S.enginesHeading}`;
@@ -1007,13 +1022,18 @@ export function renderHtml(data: ReportData): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(`${S.title} ${data.masterId}`)}</title>
+<title>${escapeHtml(heading)}</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <header>
-<h1>${escapeHtml(`${S.title} ${data.masterId}`)}</h1>
-<p class="meta">${escapeHtml(`${S.generated} ${data.generatedAt} · ${engineCountLine}`)}</p>
+<h1>${escapeHtml(heading)}</h1>
+<p class="report-link"><a href="${escapeHtml(reportUrl)}" title="${escapeHtml(reportUrl)}">${escapeHtml(
+    `${S.reportLink} ↗`,
+  )}</a></p>
+<p class="meta">${escapeHtml(
+    `${S.reportWord} ${data.masterId} · ${S.generated} ${data.generatedAt} · ${engineCountLine}`,
+  )}</p>
 </header>
 ${enginesHtml(view)}
 <section>
