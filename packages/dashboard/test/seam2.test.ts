@@ -198,11 +198,22 @@ describe('Seam 2 — canonical Samples across two Engines with colliding basenam
       new Set(['us-west-1 #1', 'us-west-1 #2']),
     );
 
-    // The Route table pools all four; p75 by the pinned method over [1000..4000].
+    // The Route table pools all four; percentiles by the pinned method over
+    // [1000..4000], with full coverage and an empty breakdown.
     const row = data.routes.find((r) => r.route === '/checkout')!;
     expect(row).toBeDefined();
     expect(row.sampleCount).toBe(4);
-    expect(row.metrics.lcp).toEqual({ p75: 3000, ok: 4, total: 4 }); // floor(3*.75)=2
+    expect(row.metrics.lcp).toEqual({
+      p50: 2000, // floor(3*.5)=1
+      p75: 3000, // floor(3*.75)=2
+      p95: 3000, // floor(3*.95)=2
+      ok: 4,
+      total: 4,
+      breakdown: {},
+    });
+    // No Outcome records in these zips → outcome-awareness unavailable, and
+    // that is never conflated with crashed.
+    expect(data.samples.every((s) => s.executionStatus === 'unavailable')).toBe(true);
   });
 
   it('records the schemaVersion-mismatch file as rejected, with a reason', async () => {

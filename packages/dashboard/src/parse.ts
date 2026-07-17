@@ -15,8 +15,10 @@
 //     collector's real output through this parser.
 
 import {
+  OUTCOME_ATTACHMENT_PREFIX,
   SAMPLE_ATTACHMENT_PREFIX,
   SCHEMA_VERSION,
+  type ExecutionOutcome,
   type Sample,
   type TestIdentity,
 } from '@bzm/vitals-format';
@@ -78,4 +80,65 @@ export function parseSampleJson(raw: string): ParseResult {
   // Everything else — including fields this version has never heard of — is
   // preserved verbatim. Do not rebuild the object; issue #10 asserts round-trip.
   return { ok: true, sample: record as unknown as DashboardSample };
+}
+
+/** Is this flat-zip basename a collector-emitted Execution Outcome attachment? */
+export function isOutcomeAttachment(basename: string): boolean {
+  return basename.startsWith(OUTCOME_ATTACHMENT_PREFIX);
+}
+
+/** The format's closed ExecutionStatus vocabulary. Anything else is rejected
+ *  loudly — misreading a status would corrupt the crashed-detection signal. */
+const EXECUTION_STATUSES: ReadonlySet<string> = new Set(['passed', 'failed', 'timedOut', 'skipped']);
+
+export type OutcomeParseResult =
+  | { ok: true; outcome: ExecutionOutcome }
+  | { ok: false; reason: string };
+
+/**
+ * Parse one Execution Outcome file's bytes. Same schemaVersion discipline as
+ * Samples; additionally the test identity (the join key) and the closed status
+ * vocabulary are validated — a missing Outcome means "crashed", so a misread
+ * one must never slip through as anything.
+ */
+export function parseOutcomeJson(raw: string): OutcomeParseResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { ok: false, reason: `not valid JSON: ${(err as Error).message}` };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, reason: 'not a JSON object' };
+  }
+  const record = parsed as Record<string, unknown>;
+
+  if (record.schemaVersion !== SCHEMA_VERSION) {
+    return {
+      ok: false,
+      reason: `schemaVersion ${JSON.stringify(record.schemaVersion)} is not the supported version ${SCHEMA_VERSION} — rejected, not misread`,
+    };
+  }
+  const test = record.test as Record<string, unknown> | undefined;
+  if (
+    typeof test !== 'object' ||
+    test === null ||
+    typeof test.file !== 'string' ||
+    typeof test.title !== 'string' ||
+    typeof test.project !== 'string' ||
+    typeof test.repeat !== 'number' ||
+    typeof test.worker !== 'number'
+  ) {
+    return { ok: false, reason: 'missing or incomplete test identity — the Outcome cannot join without it' };
+  }
+  if (typeof record.status !== 'string' || !EXECUTION_STATUSES.has(record.status)) {
+    return {
+      ok: false,
+      reason: `status ${JSON.stringify(record.status)} is not in the closed ExecutionStatus vocabulary — rejected, not misread`,
+    };
+  }
+  if (typeof record.retry !== 'number') {
+    return { ok: false, reason: 'missing retry' };
+  }
+  return { ok: true, outcome: record as unknown as ExecutionOutcome };
 }

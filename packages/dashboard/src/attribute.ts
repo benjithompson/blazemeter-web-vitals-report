@@ -6,11 +6,33 @@
 // from — a raw artifact file is not fully interpretable on its own, by design.
 // The two types are distinct and never share a name.
 
+import type { ExecutionOutcome, ExecutionStatus } from '@bzm/vitals-format';
 import type { DashboardSample } from './parse.js';
 
 /** Where a Sample came from: the library's collector, or the incumbent's
  *  performance-audit records through the legacy adapter. */
 export type SampleProvenance = 'collector' | 'legacy';
+
+/**
+ * The per-Execution status a Sample carries after the Outcome join:
+ *   - one of the format's closed ExecutionStatus values, joined from the
+ *     Execution's Outcome record (the final retry's verdict);
+ *   - 'crashed' — the Execution has NO Outcome record while other Executions
+ *     in the same session DO: the collector was clearly emitting, so the
+ *     absence means the Execution died before afterEach ran;
+ *   - 'unavailable' — outcome-awareness does not exist for this Sample: either
+ *     its session emitted zero Outcome records anywhere (an older collector,
+ *     or the legacy producer), or the Sample carries no test identity to join
+ *     on. Never conflated with 'crashed'.
+ */
+export type SampleExecutionStatus = ExecutionStatus | 'crashed' | 'unavailable';
+
+/** An Outcome plus the Engine (sessionId) whose zip it came from — the join is
+ *  strictly within a session; Engine A's repeat1 is not Engine B's repeat1. */
+export interface AttributedOutcome {
+  sessionId: string;
+  outcome: ExecutionOutcome;
+}
 
 /** The fetch-time identity of one Engine's zip. */
 export interface EngineRef {
@@ -26,6 +48,15 @@ export interface EngineRef {
 export interface AttributedSample extends EngineRef {
   provenance: SampleProvenance;
   sample: DashboardSample;
+  /**
+   * Cold Start flag, stamped by markColdStarts (aggregate.ts): true — the
+   * first Navigation by ts for this (sessionId, workerIndex); false — a later
+   * one; null — the Sample carries no workerIndex (legacy), so Cold Starts are
+   * structurally unidentifiable and never guessed. Absent before marking.
+   */
+  coldStart?: boolean | null;
+  /** Per-Execution status, stamped by joinOutcomes (aggregate.ts). Absent before the join. */
+  executionStatus?: SampleExecutionStatus;
 }
 
 /**

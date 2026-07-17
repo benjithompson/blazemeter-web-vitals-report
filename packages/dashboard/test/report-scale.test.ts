@@ -77,23 +77,53 @@ describe.skipIf(!cachePresent)('report-scale: the real demo Report through the C
     for (const s of data.samples) expect(s.masterId).toBe(DEMO_MASTER);
   });
 
-  it('renders a Route table row with p75 over the expected coverage', () => {
+  it('renders a Route table row with p50/p75/p95 over the expected coverage', () => {
     // Every audit hit https://example.com/ → Route "/".
     const row = data.routes.find((r) => r.route === '/')!;
     expect(row).toBeDefined();
     expect(row.sampleCount).toBe(100);
 
-    // LCP measured on all 100; p75 is a real number by the pinned method.
+    // LCP measured on all 100 (both Engines pooled — Samples weighted, not
+    // Engines); all three percentiles are real numbers by the pinned method,
+    // ordered as percentiles must be.
     expect(row.metrics.lcp.ok).toBe(100);
     expect(row.metrics.lcp.total).toBe(100);
-    expect(row.metrics.lcp.p75).toBeGreaterThan(0);
+    expect(row.metrics.lcp.breakdown).toEqual({});
+    expect(row.metrics.lcp.p50).toBeGreaterThan(0);
+    expect(row.metrics.lcp.p75).toBeGreaterThanOrEqual(row.metrics.lcp.p50!);
+    expect(row.metrics.lcp.p95).toBeGreaterThanOrEqual(row.metrics.lcp.p75!);
 
-    // INP was null on every incumbent record → unknown on all 100: coverage
-    // says so, and p75 is null, never 0.
-    expect(row.metrics.inp).toEqual({ p75: null, ok: 0, total: 100 });
+    // INP was null on every incumbent record. Through the legacy adapter that
+    // is status "unknown" — the incumbent cannot say WHY (the distilled
+    // fixture's "no-interaction 0 of 50" is the collector-provenance phrasing
+    // of the same fact; see known-answers.test.ts). The aggregate carries the
+    // reason as data, and p50/p75/p95 are null, never 0.
+    expect(row.metrics.inp).toEqual({
+      p50: null,
+      p75: null,
+      p95: null,
+      ok: 0,
+      total: 100,
+      breakdown: { unknown: 100 },
+      reason: 'unknown',
+    });
 
     // The blob carries no mean, anywhere.
     expect(JSON.stringify(data.routes)).not.toMatch(/"mean"|"avg"/i);
+  });
+
+  it('is honest about what legacy data cannot say: Cold Starts unidentifiable, outcomes unavailable', () => {
+    const row = data.routes.find((r) => r.route === '/')!;
+    // No legacy record carries a workerIndex → first-ts-per-(sessionId,
+    // workerIndex) is structurally impossible: null, never a guessed 0.
+    expect(row.coldStarts).toBeNull();
+    expect(data.samples.every((s) => s.coldStart === null)).toBe(true);
+
+    // Zero Outcome records anywhere → outcome-awareness unavailable; nothing
+    // is marked crashed on a session that was never emitting outcomes.
+    expect(data.outcomes).toEqual([]);
+    for (const session of data.sessions) expect(session.outcomeCount).toBe(0);
+    expect(data.samples.every((s) => s.executionStatus === 'unavailable')).toBe(true);
   });
 
   it('emits no pre-signed URL and no external fetchable reference, even at real scale', () => {

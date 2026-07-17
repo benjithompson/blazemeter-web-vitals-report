@@ -6,8 +6,13 @@
 // this parser and asserts a full round-trip.
 
 import { describe, it, expect } from 'vitest';
-import { SAMPLE_ATTACHMENT_PREFIX } from '@bzm/vitals-format';
-import { isSampleAttachment, parseSampleJson } from '../src/parse.js';
+import { OUTCOME_ATTACHMENT_PREFIX, SAMPLE_ATTACHMENT_PREFIX } from '@bzm/vitals-format';
+import {
+  isOutcomeAttachment,
+  isSampleAttachment,
+  parseOutcomeJson,
+  parseSampleJson,
+} from '../src/parse.js';
 
 const validSample = {
   schemaVersion: 1,
@@ -96,5 +101,64 @@ describe('parseSampleJson', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.sample.vitals.lcp.status).toBe('brand-new-status');
+  });
+});
+
+const validOutcome = {
+  schemaVersion: 1,
+  test: { file: 'example.spec.ts', title: 'demo Landing Page', project: 'chromium', repeat: 18, worker: 3 },
+  status: 'passed',
+  retry: 0,
+};
+
+describe('isOutcomeAttachment', () => {
+  it('matches the collector\'s Outcome basenames by prefix, and nothing else', () => {
+    expect(
+      isOutcomeAttachment(`${OUTCOME_ATTACHMENT_PREFIX}-1-026dd038dd2def1dbf45ec47ad19bd3046866d4b.json`),
+    ).toBe(true);
+    expect(isOutcomeAttachment(`${OUTCOME_ATTACHMENT_PREFIX}-2.json`)).toBe(true);
+    // Sample and Outcome prefixes never cross-match.
+    expect(isOutcomeAttachment(`${SAMPLE_ATTACHMENT_PREFIX}-1.json`)).toBe(false);
+    expect(isSampleAttachment(`${OUTCOME_ATTACHMENT_PREFIX}-1.json`)).toBe(false);
+    expect(isOutcomeAttachment('bzt.log')).toBe(false);
+  });
+});
+
+describe('parseOutcomeJson', () => {
+  it('parses a valid format-v1 Outcome', () => {
+    const result = parseOutcomeJson(JSON.stringify(validOutcome));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.outcome).toEqual(validOutcome);
+  });
+
+  it('rejects schemaVersion !== 1 loudly — same discipline as Samples', () => {
+    const result = parseOutcomeJson(JSON.stringify({ ...validOutcome, schemaVersion: 2 }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/schemaVersion/);
+  });
+
+  it('rejects an unknown status — the ExecutionStatus vocabulary is closed', () => {
+    const result = parseOutcomeJson(JSON.stringify({ ...validOutcome, status: 'exploded' }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/status/);
+    expect(result.reason).toMatch(/exploded/);
+  });
+
+  it('rejects an Outcome missing the test identity it joins on', () => {
+    const { test: _, ...rest } = validOutcome;
+    const result = parseOutcomeJson(JSON.stringify(rest));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/test/);
+  });
+
+  it('rejects unparseable bytes with a reason', () => {
+    const result = parseOutcomeJson('{not json');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason.length).toBeGreaterThan(0);
   });
 });

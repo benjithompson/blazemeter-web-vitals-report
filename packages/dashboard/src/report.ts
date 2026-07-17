@@ -12,10 +12,20 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { MasterManifest } from './cache.js';
-import { isSampleAttachment, parseSampleJson } from './parse.js';
+import {
+  isOutcomeAttachment,
+  isSampleAttachment,
+  parseOutcomeJson,
+  parseSampleJson,
+} from './parse.js';
 import { adaptLegacyAuditRecord, isLegacyAuditJsonName } from './legacy-adapter.js';
-import { attributeSample, engineLabels, type AttributedSample } from './attribute.js';
-import { aggregateRoutes, type RouteRow } from './aggregate.js';
+import {
+  attributeSample,
+  engineLabels,
+  type AttributedOutcome,
+  type AttributedSample,
+} from './attribute.js';
+import { aggregateRoutes, joinOutcomes, markColdStarts, type RouteRow } from './aggregate.js';
 
 export interface UnreadableFile {
   file: string;
@@ -30,17 +40,26 @@ export interface SessionSummary {
   /** 'no-artifact' — the Engine emitted no zip. Listed, never silently absent. */
   artifact: 'present' | 'no-artifact';
   sampleCount: number;
+  /** Execution Outcome records this Engine emitted. 0 means outcome-awareness
+   *  is unavailable for the whole session — its Samples are never "crashed". */
+  outcomeCount: number;
   unreadable: UnreadableFile[];
 }
 
-/** Everything the emitted HTML embeds. Issues #6/#7 extend this shape. */
+/** Everything the emitted HTML embeds. Issue #7 extends this shape. */
 export interface ReportData {
   masterId: string;
   /** When this HTML was generated — not when the Report ran. */
   generatedAt: string;
   sessions: SessionSummary[];
+  /** Failed Executions INCLUDED (the honest default — excluding them deletes
+   *  the slowest Samples). #9's toggle re-aggregates via
+   *  excludeFailedExecutions(samples) → aggregateRoutes. */
   routes: RouteRow[];
+  /** Every Sample, Cold-Start-flagged and Outcome-joined. */
   samples: AttributedSample[];
+  /** The raw Execution Outcomes, session-attributed. */
+  outcomes: AttributedOutcome[];
 }
 
 /** Read every record out of a cached, extracted master directory. */
@@ -54,6 +73,7 @@ export async function buildReportData(
 
   const sessions: SessionSummary[] = [];
   const samples: AttributedSample[] = [];
+  const outcomes: AttributedOutcome[] = [];
 
   for (const session of manifest.sessions) {
     const engine = {
@@ -69,6 +89,7 @@ export async function buildReportData(
       engineLabel: engine.engineLabel,
       artifact: session.artifact,
       sampleCount: 0,
+      outcomeCount: 0,
       unreadable: [],
     };
     sessions.push(summary);
@@ -81,6 +102,14 @@ export async function buildReportData(
         if (parsed.ok) {
           samples.push(attributeSample(parsed.sample, 'collector', engine));
           summary.sampleCount += 1;
+        } else {
+          summary.unreadable.push({ file, reason: parsed.reason });
+        }
+      } else if (isOutcomeAttachment(file)) {
+        const parsed = parseOutcomeJson(await readFile(path.join(sessionDir, file), 'utf8'));
+        if (parsed.ok) {
+          outcomes.push({ sessionId: session.sessionId, outcome: parsed.outcome });
+          summary.outcomeCount += 1;
         } else {
           summary.unreadable.push({ file, reason: parsed.reason });
         }
@@ -105,11 +134,18 @@ export async function buildReportData(
     }
   }
 
+  // The model's two stampings, in order: Cold Start flags (first Navigation by
+  // ts per (sessionId, workerIndex); null when unidentifiable), then the
+  // Outcome join (per-Execution status; crashed only where the session was
+  // clearly emitting Outcomes).
+  const flagged = joinOutcomes(markColdStarts(samples), outcomes);
+
   return {
     masterId: manifest.masterId,
     generatedAt: new Date().toISOString(),
     sessions,
-    routes: aggregateRoutes(samples),
-    samples,
+    routes: aggregateRoutes(flagged),
+    samples: flagged,
+    outcomes,
   };
 }
