@@ -120,18 +120,22 @@ or `playwright.config.ts` change is needed. Optional knobs, all via env:
 The credential travels only in the `Authorization` header and is never written
 to any Sample, log, or artifact.
 
-**Keeping the key out of `config.yml`:** use [BlazeMeter Vault
+**Keeping the key out of `config.yml`:** use [BlazeMeter
 secrets](https://help.blazemeter.com) instead of putting the key in an uploaded
-file. Store two secrets named `BLAZEMETER_API_KEY_ID` and
-`BLAZEMETER_API_KEY_SECRET`, reference them from the Taurus config, and the
-Engine exposes them to the worker as `BZM_SECRET_BLAZEMETER_API_KEY_ID` /
-`BZM_SECRET_BLAZEMETER_API_KEY_SECRET` — which the collector reads automatically:
+file. Secret names are lowercase-only, so a secret reaches the worker as
+`BZM_SECRET_<name>` (e.g. `BZM_SECRET_apikeyid`) rather than `BLAZEMETER_API_KEY_ID`.
+Two **pointer** vars tell the collector which env var holds each credential — they
+carry only a var *name*, never the value, so the key stays out of the config:
 
 ```yaml
-vault-integration: <your-vault-id>
 secrets:
-  - BLAZEMETER_API_KEY_ID
-  - BLAZEMETER_API_KEY_SECRET
+  - apikeyid        # managed secret holding the api-key id
+  - apikeysecret    # managed secret holding the api-key secret
+settings:
+  env:
+    BZM_VITALS_KEY_ID_ENV: BZM_SECRET_apikeyid
+    BZM_VITALS_KEY_SECRET_ENV: BZM_SECRET_apikeysecret
+# vault-integration: <id>   # only for an external/on-prem vault, not managed secrets
 ```
 
 ## 🔴 Keep your API key out of git

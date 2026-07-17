@@ -204,28 +204,37 @@ describe('env readers — activation and identity, all from named vars only', ()
     expect(readDiscreteCredentials({ BLAZEMETER_API_KEY: '/tmp/key.json' })).toBeNull();
   });
 
-  it('readDiscreteCredentials also reads the BlazeMeter Vault BZM_SECRET_ forms', () => {
-    // A Vault secret named BLAZEMETER_API_KEY_ID reaches the worker as this env var.
+  it('the pointer vars redirect to arbitrarily-named env vars (BlazeMeter managed secrets)', () => {
+    // A managed secret named "apikeyid" (lowercase-only) reaches the worker as
+    // BZM_SECRET_apikeyid; the pointer var names it so the collector reads it.
     expect(
       readDiscreteCredentials({
-        BZM_SECRET_BLAZEMETER_API_KEY_ID: 'vk',
-        BZM_SECRET_BLAZEMETER_API_KEY_SECRET: 'vs',
+        BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_apikeyid',
+        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_apikeysecret',
+        BZM_SECRET_apikeyid: 'vk',
+        BZM_SECRET_apikeysecret: 'vs',
       }),
     ).toEqual({ id: 'vk', secret: 'vs' });
-    // Direct vars win when both sources are present.
+    // A pointer that names a missing var yields null (all-or-nothing).
+    expect(
+      readDiscreteCredentials({ BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_apikeyid', BZM_SECRET_apikeyid: 'vk' }),
+    ).toBeNull();
+    // With the pointers set, the default BLAZEMETER_API_KEY_* vars are NOT consulted.
     expect(
       readDiscreteCredentials({
-        BLAZEMETER_API_KEY_ID: 'direct-id',
-        BLAZEMETER_API_KEY_SECRET: 'direct-secret',
-        BZM_SECRET_BLAZEMETER_API_KEY_ID: 'vault-id',
-        BZM_SECRET_BLAZEMETER_API_KEY_SECRET: 'vault-secret',
+        BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_apikeyid',
+        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_apikeysecret',
+        BLAZEMETER_API_KEY_ID: 'ignored',
+        BLAZEMETER_API_KEY_SECRET: 'ignored',
       }),
-    ).toEqual({ id: 'direct-id', secret: 'direct-secret' });
-    // Still all-or-nothing across the mixed sources.
-    expect(readDiscreteCredentials({ BZM_SECRET_BLAZEMETER_API_KEY_ID: 'vk' })).toBeNull();
-    // A direct id can pair with a Vault secret (and vice-versa).
+    ).toBeNull();
+    // Each pointer is independent — one redirected, one default.
     expect(
-      readDiscreteCredentials({ BLAZEMETER_API_KEY_ID: 'k', BZM_SECRET_BLAZEMETER_API_KEY_SECRET: 'vs' }),
+      readDiscreteCredentials({
+        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_apikeysecret',
+        BLAZEMETER_API_KEY_ID: 'k',
+        BZM_SECRET_apikeysecret: 'vs',
+      }),
     ).toEqual({ id: 'k', secret: 'vs' });
   });
 });

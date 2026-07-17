@@ -135,20 +135,25 @@ export interface Credentials {
 }
 
 /**
- * api-key id/secret — the DISCRETE vars, from either of two sources, in order:
- *   1. BLAZEMETER_API_KEY_ID / BLAZEMETER_API_KEY_SECRET — set directly (local / CI).
- *   2. BZM_SECRET_BLAZEMETER_API_KEY_ID / BZM_SECRET_BLAZEMETER_API_KEY_SECRET — the
- *      form a BlazeMeter Vault secret takes on the Engine: a secret referenced from the
- *      Taurus `secrets:` list is exposed to the worker as `BZM_SECRET_<secret name>`, so
- *      naming the two Vault secrets `BLAZEMETER_API_KEY_ID` / `BLAZEMETER_API_KEY_SECRET`
- *      makes them resolve here with the key never written into config.yml or any artifact.
- * The file-path BLAZEMETER_API_KEY form is a local convenience, irrelevant on an Engine
- * and deliberately ignored. `process.env` is still never serialized — only these named
- * values are read, and only into the Authorization header.
+ * api-key id/secret — read from the DISCRETE env vars. By default those are
+ * `BLAZEMETER_API_KEY_ID` / `BLAZEMETER_API_KEY_SECRET` (set directly for local / CI).
+ *
+ * On a BlazeMeter Engine the key is better supplied as a managed secret so it never lands
+ * in an uploaded file or artifact — but a secret's name is lowercase-only, so it reaches
+ * the worker under a name like `BZM_SECRET_apikeyid`, not `BLAZEMETER_API_KEY_ID`. Two
+ * non-secret pointer vars let the config say WHICH env var holds each credential:
+ *   BZM_VITALS_KEY_ID_ENV      -> name of the env var holding the id     (e.g. BZM_SECRET_apikeyid)
+ *   BZM_VITALS_KEY_SECRET_ENV  -> name of the env var holding the secret (e.g. BZM_SECRET_apikeysecret)
+ * These carry only a var NAME, never the value, so the key stays out of config.yml — and
+ * this is also robust to the exact secret-env prefix. The file-path BLAZEMETER_API_KEY
+ * form is a local convenience, irrelevant on an Engine and deliberately ignored.
+ * `process.env` is never serialized — only the two named values are read, into the header.
  */
 export function readDiscreteCredentials(env: Env): Credentials | null {
-  const id = env.BLAZEMETER_API_KEY_ID || env.BZM_SECRET_BLAZEMETER_API_KEY_ID;
-  const secret = env.BLAZEMETER_API_KEY_SECRET || env.BZM_SECRET_BLAZEMETER_API_KEY_SECRET;
+  const idVar = env.BZM_VITALS_KEY_ID_ENV?.trim() || 'BLAZEMETER_API_KEY_ID';
+  const secretVar = env.BZM_VITALS_KEY_SECRET_ENV?.trim() || 'BLAZEMETER_API_KEY_SECRET';
+  const id = env[idVar];
+  const secret = env[secretVar];
   if (id && secret) return { id, secret };
   return null;
 }
