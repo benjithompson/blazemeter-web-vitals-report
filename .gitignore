@@ -1,0 +1,10 @@
+# BlazeMeter API credentials — never commit
+api-key.json
+api-keys.json
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+
