@@ -20,6 +20,8 @@ export interface RunOptions {
   /** Fixture spec filename under test/fixtures, e.g. "journey.spec.ts". */
   spec: string;
   baseURL: string;
+  /** Project name from fixtures/playwright.config.ts. Defaults to "chromium". */
+  project?: string;
   /** Extra CLI args, e.g. ['--repeat-each', '2', '--workers', '2']. */
   args?: string[];
   /** Extra env for the child (merged over process.env). */
@@ -44,7 +46,7 @@ export async function runPlaywright(opts: RunOptions): Promise<RunResult> {
     '--config',
     join(FIXTURES_DIR, 'playwright.config.ts'),
     '--project',
-    'chromium',
+    opts.project ?? 'chromium',
     '--output',
     outputDir,
     ...(opts.args ?? []),

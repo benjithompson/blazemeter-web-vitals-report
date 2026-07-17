@@ -26,15 +26,39 @@ function page(title: string, body: string): string {
       d.textContent = 'late content';
       document.body.insertBefore(d, document.body.firstChild);
     }, 50);
+    // The click target does two things a spec can rely on:
+    //  - burns ~30ms so the interaction's duration clears event-timing's 16ms
+    //    durationThreshold floor (a no-op handler can finish under it and emit nothing);
+    //  - appends a visible #clicked-flag the spec can await, which forces the paint
+    //    that finalizes the interaction's duration before the journey moves on.
+    // The appended flag also shifts layout WITH recent input — CLS must exclude it.
+    document.getElementById('target').addEventListener('click', function () {
+      var start = performance.now();
+      while (performance.now() - start < 30) { /* deliberate jank */ }
+      var p = document.createElement('p');
+      p.id = 'clicked-flag';
+      p.textContent = 'clicked';
+      document.body.appendChild(p);
+    });
   </script>
 </body>
 </html>`;
 }
 
+// The hostile page sabotages the trap's flush-time reads. Page scripts run AFTER init
+// scripts, so the trap's observers are already registered when this runs — which is the
+// point: LCP/CLS ride on observer state and survive; TTFB/FCP are read from the (now
+// throwing) timeline at flush and must land as status 'error', with the Sample intact.
+const HOSTILE = page('Hostile', `<p>hostile content</p>
+  <script>
+    performance.getEntriesByType = function () { throw new Error('sabotaged by fixture'); };
+  </script>`);
+
 const ROUTES: Record<string, string> = {
   '/': page('Home', '<p>landing content</p>'),
   '/second': page('Second', '<p>second content</p>'),
   '/third': page('Third', '<p>third content</p>'),
+  '/hostile': HOSTILE,
 };
 
 export interface FixtureServer {

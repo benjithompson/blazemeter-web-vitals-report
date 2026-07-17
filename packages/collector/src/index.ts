@@ -7,10 +7,10 @@
 // call, no teardown hook the tester owns. Every Navigation the test drives leaves one
 // Sample JSON file on disk (format v1), written to outputPath() then attach({ path }).
 //
-// This file is issue #1 — the tracer: TTFB and FCP only. LCP/CLS/INP are #3; the
-// Execution Outcome record and the vitals.route() knob are #4. The seams those need
-// are already cut here (an in-page trap that flushes on its own listeners; a Node-side
-// binding that assembles and writes the Sample) so they slot in without reshaping this.
+// Issue #1 cut the seams (an in-page trap that flushes on its own listeners; a Node-side
+// binding that assembles and writes the Sample); issue #3 filled in the metric set: all
+// five vitals — TTFB, FCP, LCP, CLS, INP — each as {value, status}, every status true.
+// The Execution Outcome record and the vitals.route() knob are #4.
 //
 // The load-bearing decisions, all measured on real Engines (see SPEC.md):
 //   * attach({ body }) writes NOTHING under Taurus and errors nowhere. The write-file-
@@ -31,6 +31,7 @@ import {
   SAMPLE_ATTACHMENT_PREFIX,
   type Sample,
   type Metric,
+  type MetricStatus,
   type TestIdentity,
 } from '@bzm/vitals-format';
 
@@ -43,12 +44,24 @@ const FLUSH_HOOK = '__bzmVitalsFlush';
  * The raw reading the in-page trap produces at flush. Node turns it into a Sample.
  * Values are DOMHighResTimeStamps relative to the document's own time origin; `ts`
  * comes from performance.timeOrigin, which is epoch ms at THIS Navigation's start.
+ *
+ * Each vital arrives as {value, status} because only the trap knows WHY a value is
+ * missing (API absent vs never finalized vs collection threw). Node sanitizes but
+ * never invents a status.
  */
+interface RawMetric {
+  value: number | null;
+  status: string;
+}
+
 interface RawReading {
   timeOrigin: number;
   url: string;
-  ttfb: number | null;
-  fcp: number | null;
+  ttfb: RawMetric;
+  fcp: RawMetric;
+  lcp: RawMetric;
+  cls: RawMetric;
+  inp: RawMetric;
   domContentLoadedMs: number | null;
   loadEventMs: number | null;
   resourceCount: number | null;
@@ -83,47 +96,195 @@ function trapSource(reportBinding: string, flushHook: string): string {
   return `(() => {
     if (window.top !== window) return;            // top frame only — ignore iframes
     var flushed = false;
-    function readFcp() {
+
+    // Feature detection is per metric, via supportedEntryTypes. Missing API -> that
+    // metric is 'unsupported' and the Sample STILL emits — the incumbent's silent skip
+    // of non-Chromium engines is the defect this exists to kill.
+    var supported = [];
+    try {
+      supported = (window.PerformanceObserver && PerformanceObserver.supportedEntryTypes) || [];
+    } catch (e) {}
+
+    // ---- LCP — hand-rolled, and there is NO isTrusted gate anywhere in this path.
+    // That gate is web-vitals-the-library's, not the platform's; under a synthetic
+    // flush it silently drops LCP. LCP here is simply the last candidate observed at
+    // flush time — honest, and stated as such.
+    var lcp = { value: null, status: 'unsupported' };
+    var lcpObs = null;
+    function lcpTake(list) {
+      var es = list.getEntries ? list.getEntries() : list;
+      if (es.length) { lcp.value = es[es.length - 1].startTime; lcp.status = 'ok'; }
+    }
+    if (supported.indexOf('largest-contentful-paint') >= 0) {
+      // Supported but never fired by flush -> the candidate never finalized.
+      lcp.status = 'not-finalized';
+      try {
+        lcpObs = new PerformanceObserver(lcpTake);
+        lcpObs.observe({ type: 'largest-contentful-paint', buffered: true });
+      } catch (e) { lcp.status = 'error'; lcpObs = null; }
+    }
+
+    // ---- CLS — session windows per the web.dev definition: shifts (excluding
+    // hadRecentInput) accumulate into a session while gaps stay < 1s and the session
+    // stays < 5s long; CLS is the MAX session value. A true float — never rounded.
+    var cls = { value: null, status: 'unsupported' };
+    var clsObs = null;
+    var sessionValue = 0, sessionFirst = 0, sessionPrev = 0;
+    function clsTake(list) {
+      var es = list.getEntries ? list.getEntries() : list;
+      for (var i = 0; i < es.length; i++) {
+        var e = es[i];
+        if (e.hadRecentInput) continue;
+        if (sessionValue > 0 && e.startTime - sessionPrev < 1000 && e.startTime - sessionFirst < 5000) {
+          sessionValue += e.value;
+        } else {
+          sessionValue = e.value;
+          sessionFirst = e.startTime;
+        }
+        sessionPrev = e.startTime;
+        if (sessionValue > cls.value) cls.value = sessionValue;
+      }
+    }
+    if (supported.indexOf('layout-shift') >= 0) {
+      // Supported with no shifts observed is a GENUINE zero (stable page), not a gap —
+      // 'cls: 0, ok' and 'cls: null, unsupported' must coexist, which is why both exist.
+      cls.value = 0;
+      cls.status = 'ok';
+      try {
+        clsObs = new PerformanceObserver(clsTake);
+        clsObs.observe({ type: 'layout-shift', buffered: true });
+      } catch (e) { cls.value = null; cls.status = 'error'; clsObs = null; }
+    }
+
+    // ---- INP — worst qualifying interaction (max event-timing duration per
+    // interactionId). The standard high-percentile pick estimates p98 as one candidate
+    // per 50 interactions, which DEGENERATES to the worst below 50 — and a scripted
+    // journey drives a handful at most, so worst-interaction is the honest choice: a
+    // within-harness regression signal, never a field-comparable p75.
+    var inp = { value: null, status: 'unsupported' };
+    var inpObs = null;
+    var interactions = {};   // interactionId -> worst duration seen
+    function inpTake(list) {
+      var es = list.getEntries ? list.getEntries() : list;
+      for (var i = 0; i < es.length; i++) {
+        var e = es[i];
+        if (!e.interactionId) continue;    // hover/scroll noise has interactionId 0
+        var prev = interactions[e.interactionId];
+        if (prev === undefined || e.duration > prev) interactions[e.interactionId] = e.duration;
+      }
+    }
+    if (supported.indexOf('event') >= 0 &&
+        typeof window.PerformanceEventTiming === 'function' &&
+        'interactionId' in PerformanceEventTiming.prototype) {
+      // Supported and nothing clicked is 'no-interaction' — never 0, never absent.
+      inp.status = 'no-interaction';
+      try {
+        inpObs = new PerformanceObserver(inpTake);
+        // 16 is the lowest durationThreshold the spec allows; buffered picks up
+        // interactions from before observer registration completed.
+        inpObs.observe({ type: 'event', durationThreshold: 16, buffered: true });
+      } catch (e) { inp.status = 'error'; inpObs = null; }
+    }
+
+    // takeRecords() hands over entries the browser has generated but not yet delivered
+    // to a callback — the synchronous half of the flush hardening. The pagehide flush
+    // relies on it alone; the teardown flush also waits a paint first (below) for
+    // durations still being finalized.
+    function drain() {
+      try { if (lcpObs) lcpTake(lcpObs.takeRecords()); } catch (e) { lcp = { value: null, status: 'error' }; }
+      try { if (clsObs) clsTake(clsObs.takeRecords()); } catch (e) { cls = { value: null, status: 'error' }; }
+      try { if (inpObs) inpTake(inpObs.takeRecords()); } catch (e) { inp = { value: null, status: 'error' }; }
+      if (inp.status === 'no-interaction') {
+        var worst = null;
+        for (var k in interactions) {
+          if (worst === null || interactions[k] > worst) worst = interactions[k];
+        }
+        if (worst !== null) { inp.value = worst; inp.status = 'ok'; }
+      }
+    }
+
+    function readFcpRaw() {
       var paints = performance.getEntriesByType('paint');
       for (var i = 0; i < paints.length; i++) {
         if (paints[i].name === 'first-contentful-paint') return paints[i].startTime;
       }
       return null;
     }
-    // Synchronous report — reads the live performance timeline and pushes to Node once.
-    // Used by pagehide / visibilitychange, where the page is being discarded and there is
-    // no time to await: by navigation-away the FCP paint entry is already in the buffer.
+    function readFcpSafe() {
+      try { return readFcpRaw(); } catch (e) { return null; }
+    }
+
+    // Synchronous report — reads the live performance timeline, drains the observers,
+    // and pushes to Node once. Used directly by pagehide / visibilitychange, where the
+    // page is being discarded and there is no time to await. Every timeline read is
+    // individually guarded: a throw costs THAT metric ('error'), never the Sample.
     function report() {
       if (flushed) return Promise.resolve();
       if (location.href === 'about:blank') return Promise.resolve();  // no real Navigation
       flushed = true;
-      var nav = performance.getEntriesByType('navigation')[0];
+      drain();
+      var ttfb = { value: null, status: 'not-finalized' };
+      var dcl = null, loadEnd = null, resources = null;
+      try {
+        var nav = performance.getEntriesByType('navigation')[0];
+        if (nav) {
+          ttfb = { value: nav.responseStart, status: 'ok' };
+          dcl = nav.domContentLoadedEventEnd;
+          loadEnd = nav.loadEventEnd;
+        }
+      } catch (e) { ttfb = { value: null, status: 'error' }; }
+      var fcp = { value: null, status: 'not-finalized' };
+      try {
+        var f = readFcpRaw();
+        if (f !== null) fcp = { value: f, status: 'ok' };
+      } catch (e) { fcp = { value: null, status: 'error' }; }
+      try { resources = performance.getEntriesByType('resource').length; } catch (e) {}
       var reading = {
         timeOrigin: performance.timeOrigin,
         url: location.href,
-        ttfb: nav ? nav.responseStart : null,
-        fcp: readFcp(),
-        domContentLoadedMs: nav ? nav.domContentLoadedEventEnd : null,
-        loadEventMs: nav ? nav.loadEventEnd : null,
-        resourceCount: performance.getEntriesByType('resource').length
+        ttfb: ttfb,
+        fcp: fcp,
+        lcp: lcp,
+        cls: cls,
+        inp: inp,
+        domContentLoadedMs: dcl,
+        loadEventMs: loadEnd,
+        resourceCount: resources
       };
       return window['${reportBinding}'](reading);
     }
-    // Teardown flush — the page is still alive here, so we can wait for FCP. On a fast page
-    // the last Navigation ends before its FCP paint entry is recorded; without this grace
-    // window FCP would race to null. Bounded: FCP may legitimately never come, so we report
-    // regardless after the timeout.
+
+    // One paint, then a macrotask: two rAFs force the frame that finalizes in-flight
+    // event-timing durations (an interaction's duration only exists after the next
+    // paint), and the setTimeout lets observer queues deliver before drain(). Bounded:
+    // a hidden or throttled page may never paint again, so a timer backstops it.
+    function afterNextPaint(cb) {
+      var done = false;
+      function fire() { if (done) return; done = true; cb(); }
+      try {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () { setTimeout(fire, 0); });
+        });
+      } catch (e) {}
+      setTimeout(fire, 300);
+    }
+
+    // Teardown flush — the page is still alive here, so we can wait. On a fast page the
+    // last Navigation ends before its FCP paint entry is recorded; without this grace
+    // window FCP (and the LCP candidate that rides the same paint) would race to null.
+    // Bounded: FCP may legitimately never come, so we report regardless after 1500ms.
     function flushWithGrace() {
       if (flushed) return Promise.resolve();
-      if (readFcp() !== null) return report();
       return new Promise(function (resolve) {
+        function proceed() { afterNextPaint(function () { resolve(report()); }); }
+        if (readFcpSafe() !== null) { proceed(); return; }
         var settled = false;
         var obs;
         function finish() {
           if (settled) return;
           settled = true;
           try { obs && obs.disconnect(); } catch (e) {}
-          resolve(report());
+          proceed();
         }
         try {
           obs = new PerformanceObserver(function (list) {
@@ -145,11 +306,29 @@ function trapSource(reportBinding: string, flushHook: string): string {
   })()`;
 }
 
-/** value present -> measured; absent -> collection did not finalize it. */
-function metric(value: number | null): Metric {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? { value, status: 'ok' }
-    : { value: null, status: 'not-finalized' };
+/**
+ * Sanitize a raw metric from the page into the record. The collector's vocabulary is
+ * the closed set MINUS 'unknown' (the legacy adapter's alone — never written here);
+ * anything malformed lands as 'error' rather than inventing a status, and a value
+ * survives only when the status says it was measured.
+ */
+const COLLECTOR_STATUSES = new Set<MetricStatus>([
+  'ok',
+  'unsupported',
+  'no-interaction',
+  'not-finalized',
+  'error',
+]);
+
+function metric(raw: RawMetric | undefined): Metric {
+  const status = raw?.status as MetricStatus;
+  if (!COLLECTOR_STATUSES.has(status)) return { value: null, status: 'error' };
+  if (status === 'ok') {
+    return typeof raw?.value === 'number' && Number.isFinite(raw.value)
+      ? { value: raw.value, status: 'ok' }   // CLS is a true float — never round here
+      : { value: null, status: 'error' };
+  }
+  return { value: null, status };
 }
 
 /**
@@ -178,6 +357,9 @@ async function attachCollector(page: Page, testInfo: TestInfo, state: CollectorS
       vitals: {
         ttfb: metric(reading.ttfb),
         fcp: metric(reading.fcp),
+        lcp: metric(reading.lcp),
+        cls: metric(reading.cls),
+        inp: metric(reading.inp),
       },
       navigation: {
         domContentLoadedMs: reading.domContentLoadedMs,

@@ -16,5 +16,13 @@ export default defineConfig({
   use: {
     baseURL: process.env.PW_BASE_URL,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    // channel 'chromium' is deliberate: default headless runs the old chrome-headless-shell
+    // path, where LCP/INP are paint-terminated (SPEC.md). This is the path Taurus should
+    // run too, so the harness measures the branded-headless behavior the library targets.
+    { name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chromium' } },
+    // Non-Chromium engine: no LayoutShift API. Exists so the harness can prove a Sample
+    // is STILL emitted with cls 'unsupported' — the incumbent's silent skip is the defect.
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+  ],
 });
