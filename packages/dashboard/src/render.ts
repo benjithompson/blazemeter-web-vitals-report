@@ -229,7 +229,9 @@ function histogramHtml(histo: HistogramView): string {
 // The chart renderer walks chart.series — N series on the ONE shared axis —
 // so a foreign series later is one more loop iteration, not a rework.
 
-const TL_W = 860;
+// Matches the body's content column (80rem minus padding), so at full width
+// the svg renders 1:1 and its 10px labels stay 10px — width:100% below that.
+const TL_W = 1240;
 const TL_PL = 56; // left pad: y tick labels
 const TL_PR = 14;
 const TL_PT = 12; // top pad: p75 label headroom
@@ -832,7 +834,7 @@ const STYLE = `
   * { box-sizing: border-box; }
   body {
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    margin: 0 auto; max-width: 76rem; padding: 1.5rem 1.25rem 3rem;
+    margin: 0 auto; max-width: 80rem; padding: 1.5rem 1.25rem 3rem;
     background: var(--page); color: var(--ink); line-height: 1.45;
   }
   h1 { font-size: 1.35rem; margin: 0 0 0.25rem; }
@@ -858,7 +860,7 @@ const STYLE = `
 
   .table-scroll { overflow-x: auto; }
   table { border-collapse: collapse; font-size: 0.9rem; }
-  table.routes { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+  table.routes { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
   th, td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--grid); vertical-align: top; }
   th { text-align: left; font-weight: 600; color: var(--ink-2); font-size: 0.78rem; }
   th.num, td.num, td.metric { text-align: right; }
