@@ -197,8 +197,8 @@ function histogramHtml(histo: HistogramView): string {
           ? fmtValue(histo.metric, bin.x0)
           : `${fmtValue(histo.metric, bin.x0)} – ${fmtValue(histo.metric, bin.x1)}`;
       return (
-        `<path class="bar" d="${barPath(x, baselineY - h, barW, h)}">` +
-        `<title>${escapeHtml(`${range} · ${bin.count} ${S.binTooltipSuffix}`)}</title></path>`
+        `<path class="bar" data-tip="${escapeHtml(`${range} · ${bin.count} ${S.binTooltipSuffix}`)}" ` +
+        `d="${barPath(x, baselineY - h, barW, h)}"></path>`
       );
     })
     .join('');
@@ -263,18 +263,22 @@ function slotClass(slot: number | undefined, multiEngine: boolean): string {
 
 /** A point marker: circle for a Sample, diamond for a Cold Start (a SHAPE, so
  *  the flag survives color-blindness and never depends on hue). null coldStart
- *  (legacy) draws a plain circle — the marker is never faked. */
-function tlMarker(x: number, y: number, cls: string, coldStart: boolean, title: string): string {
-  const t = `<title>${escapeHtml(title)}</title>`;
+ *  (legacy) draws a plain circle — the marker is never faked.
+ *
+ *  The hover text rides as data-tip — precomputed here, shown by the inline
+ *  script's tooltip, which positions but never composes. (A native <title>
+ *  alongside would double the tooltip.) */
+function tlMarker(x: number, y: number, cls: string, coldStart: boolean, tip: string): string {
+  const t = ` data-tip="${escapeHtml(tip)}"`;
   const cx = x.toFixed(1);
   const cy = y.toFixed(1);
   if (coldStart) {
     const d = `M${cx},${(y - 6).toFixed(1)} L${(x + 6).toFixed(1)},${cy} L${cx},${(y + 6).toFixed(
       1,
     )} L${(x - 6).toFixed(1)},${cy} Z`;
-    return `<path class="pt cold ${cls}" d="${d}">${t}</path>`;
+    return `<path class="pt cold ${cls}"${t} d="${d}"></path>`;
   }
-  return `<circle class="pt ${cls}" cx="${cx}" cy="${cy}" r="4">${t}</circle>`;
+  return `<circle class="pt ${cls}"${t} cx="${cx}" cy="${cy}" r="4"></circle>`;
 }
 
 function timelineChartHtml(
@@ -753,6 +757,38 @@ const INLINE_SCRIPT = `
     });
   });
   (function () {
+    // Chart hover tooltip. The text is precomputed server-side in data-tip;
+    // this only shows, positions, and hides it — it composes nothing.
+    var tip = document.getElementById('bzm-tip');
+    if (!tip) return;
+    function place(e) {
+      var pad = 12;
+      var x = e.clientX + pad;
+      var y = e.clientY + pad;
+      if (x + tip.offsetWidth > window.innerWidth - 4) x = e.clientX - tip.offsetWidth - pad;
+      if (y + tip.offsetHeight > window.innerHeight - 4) y = e.clientY - tip.offsetHeight - pad;
+      tip.style.left = x + 'px';
+      tip.style.top = y + 'px';
+    }
+    document.addEventListener('pointerover', function (e) {
+      var el = e.target instanceof Element ? e.target.closest('[data-tip]') : null;
+      if (!el) return;
+      tip.textContent = el.getAttribute('data-tip');
+      tip.removeAttribute('hidden');
+      place(e);
+    });
+    document.addEventListener('pointermove', function (e) {
+      if (tip.hasAttribute('hidden')) return;
+      var el = e.target instanceof Element ? e.target.closest('[data-tip]') : null;
+      if (!el) tip.setAttribute('hidden', '');
+      else place(e);
+    });
+    document.addEventListener('pointerout', function (e) {
+      var el = e.target instanceof Element ? e.target.closest('[data-tip]') : null;
+      if (el) tip.setAttribute('hidden', '');
+    });
+  })();
+  (function () {
     var toggle = document.getElementById('bzm-include-failed');
     var included = document.getElementById('bzm-variant-included');
     var excluded = document.getElementById('bzm-variant-excluded');
@@ -914,6 +950,16 @@ const STYLE = `
     paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round;
   }
   .pt { stroke: var(--surface); stroke-width: 2; }
+  [data-tip] { cursor: default; }
+  [data-tip]:hover { stroke: var(--ink-2); }
+  #bzm-tip {
+    position: fixed; z-index: 10; max-width: 22rem;
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.35rem 0.6rem; font-size: 0.75rem; line-height: 1.45;
+    white-space: pre-line; overflow-wrap: anywhere;
+    pointer-events: none; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+  }
   .pt-mono { fill: var(--series-1); }
   .pt-s0 { fill: var(--cat-1); } .pt-s1 { fill: var(--cat-2); }
   .pt-s2 { fill: var(--cat-3); } .pt-s3 { fill: var(--cat-4); }
@@ -973,6 +1019,7 @@ ${enginesHtml(view)}
 ${strip}
 ${body}
 </section>
+<div id="bzm-tip" role="tooltip" hidden></div>
 <script type="application/json" id="${DATA_BLOB_ID}">${embedJson(data)}</script>
 <script>${INLINE_SCRIPT}</script>
 </body>
