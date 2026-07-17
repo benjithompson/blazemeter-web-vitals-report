@@ -11,13 +11,35 @@
 //   - NO credentials and NO pre-signed URLs, ever;
 //   - a Report with zero vitals says "no samples", never 0.
 //
-// The visual layer here is the tracer's minimum — a Route table with p75 and
-// coverage. Issue #6 makes the statistics right (p50/p95, Cold Starts,
-// thresholds); issue #7 makes the table good.
+// Everything visible is rendered server-side from the PRECOMPUTED view model
+// (view-model.ts): threshold dots (p75 only), groupings, blend caveats,
+// histogram bins — all decided at build time, all unit-tested there. The one
+// inline script toggles drill-down rows open and closed; it decides nothing.
+//
+// The look (dataviz skill): status colors carry the p75 threshold verdict and
+// nothing else — good #0ca30c / needs-improvement #fab219 / poor #d03b3b, the
+// same steps in both modes, always paired with a text label (title + visually
+// hidden text), never color alone. Histograms are single-series (slot-1 blue),
+// thin bars with 2px surface gaps and rounded data-ends, in drill-in only.
+// Vocabulary (CONTEXT.md) comes from UI_STRINGS, nowhere else.
 
 import type { ReportData } from './report.js';
+import { UI_STRINGS as S } from './ui-strings.js';
+import {
+  buildView,
+  type EngineView,
+  type HistogramView,
+  type MetricCell,
+  type NavigationView,
+  type ReportView,
+  type RouteView,
+  type TestGroupView,
+} from './view-model.js';
+import type { ThresholdBand } from './thresholds.js';
 
 export const DATA_BLOB_ID = 'bzm-vitals-data';
+
+// --------------------------------------------------------------- utilities
 
 function escapeHtml(text: string): string {
   return text
@@ -28,7 +50,7 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * JSON for embedding inside a <script> element. Escaping every "<" as \u003c
+ * JSON for embedding inside a <script> element. Escaping every "<" as \\u003c
  * makes "</script>" (and "<!--") impossible in the payload while remaining
  * plain JSON — JSON.parse reads it back identically.
  */
@@ -36,121 +58,502 @@ function embedJson(data: unknown): string {
   return JSON.stringify(data).replace(/</g, '\\u003c');
 }
 
-// The inline renderer. Everything it needs is in the blob; it touches no
-// network. Kept as a plain string so the emitted file has no build products.
+/** Display formatting: CLS is a true unitless float; everything else is ms. */
+function fmtValue(metric: string, value: number): string {
+  if (metric === 'cls') {
+    return String(Math.round(value * 100000) / 100000);
+  }
+  return `${Math.round(value).toLocaleString('en-US')} ms`;
+}
+
+/** "1 Sample" / "n Samples" — counts read naturally at every level. */
+function nSamples(n: number): string {
+  return `${n} ${n === 1 ? S.sampleWord : S.samplesWord}`;
+}
+
+/** The subordinate p50/p95 line drops the unit — the p75 beside it carries it. */
+function fmtBare(metric: string, value: number): string {
+  if (metric === 'cls') return fmtValue(metric, value);
+  return Math.round(value).toLocaleString('en-US');
+}
+
+/** The metric's column heading — the known five read as acronyms. */
+const KNOWN_HEADINGS: Record<string, string> = {
+  ttfb: 'TTFB',
+  fcp: 'FCP',
+  lcp: 'LCP',
+  cls: 'CLS',
+  inp: 'INP',
+};
+function metricHeading(name: string): string {
+  return KNOWN_HEADINGS[name] ?? name;
+}
+
+const BAND_LABEL: Record<ThresholdBand, string> = {
+  good: S.bandGood,
+  'needs-improvement': S.bandNeedsImprovement,
+  poor: S.bandPoor,
+};
+
+/** "no-interaction" → "no interaction"; "not-carried" → the UI's phrasing. */
+function reasonLabel(reason: string): string {
+  if (reason === 'not-carried') return S.notCarried;
+  return reason.replace(/-/g, ' ');
+}
+
+/** The not-ok statuses itemized, for the coverage tooltip: "9 unsupported". */
+function breakdownTitle(cell: MetricCell): string {
+  return Object.entries(cell.breakdown)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([status, count]) => `${count} ${reasonLabel(status)}`)
+    .join(', ');
+}
+
+// ------------------------------------------------------------------- cells
+
+/** The threshold dot — beside p75 ONLY, and never color alone: a title and
+ *  visually-hidden text always carry the band name. */
+function dotHtml(cell: MetricCell): string {
+  if (cell.dot === null) return '';
+  const band = BAND_LABEL[cell.dot];
+  const title = `${metricHeading(cell.metric)} ${S.p75} — ${band} (web.dev)`;
+  return (
+    `<span class="dot dot-${cell.dot}" title="${escapeHtml(title)}"></span>` +
+    `<span class="sr-only">${escapeHtml(band)} </span>`
+  );
+}
+
+function metricCellHtml(cell: MetricCell): string {
+  const coverage = `${cell.ok} ${S.ofWord} ${cell.total}`;
+  const coverageTitle = breakdownTitle(cell);
+  const coverageHtml = `<div class="coverage"${
+    coverageTitle ? ` title="${escapeHtml(coverageTitle)}"` : ''
+  }>${escapeHtml(coverage)}</div>`;
+
+  if (cell.ok === 0 || cell.p75 === null) {
+    // Nothing measured: the reason, never a number, never a 0.
+    const reason = reasonLabel(cell.reason ?? 'invalid');
+    return (
+      `<td class="metric">` +
+      `<div class="lead reason">${escapeHtml(reason)}</div>` +
+      coverageHtml +
+      `</td>`
+    );
+  }
+
+  const shape =
+    `${S.p50} ${escapeHtml(fmtBare(cell.metric, cell.p50!))}` +
+    ` · ${S.p95} ${escapeHtml(fmtBare(cell.metric, cell.p95!))}`;
+  return (
+    `<td class="metric">` +
+    `<div class="lead">${dotHtml(cell)}<span class="p75">${escapeHtml(
+      fmtValue(cell.metric, cell.p75),
+    )}</span></div>` +
+    `<div class="shape">${shape}</div>` +
+    coverageHtml +
+    `</td>`
+  );
+}
+
+// -------------------------------------------------------------- histograms
+
+const HISTO_W = 260;
+const HISTO_H = 72;
+const HISTO_PLOT_H = 56;
+const HISTO_GAP = 2;
+
+/** A bar with a rounded data-end and a square baseline end. */
+function barPath(x: number, y: number, w: number, h: number): string {
+  const r = Math.min(3, w / 2, h);
+  const x2 = x + w;
+  const yb = y + h;
+  return `M${x.toFixed(2)},${yb.toFixed(2)} V${(y + r).toFixed(2)} Q${x.toFixed(2)},${y.toFixed(
+    2,
+  )} ${(x + r).toFixed(2)},${y.toFixed(2)} H${(x2 - r).toFixed(2)} Q${x2.toFixed(2)},${y.toFixed(
+    2,
+  )} ${x2.toFixed(2)},${(y + r).toFixed(2)} V${yb.toFixed(2)} Z`;
+}
+
+function histogramHtml(histo: HistogramView): string {
+  const n = histo.bins.length;
+  const barW = (HISTO_W - (n - 1) * HISTO_GAP) / n;
+  const baselineY = HISTO_PLOT_H + 2;
+  const bars = histo.bins
+    .map((bin, i) => {
+      if (bin.count === 0) return '';
+      const h = Math.max(2, (bin.count / histo.maxBinCount) * HISTO_PLOT_H);
+      const x = i * (barW + HISTO_GAP);
+      const range =
+        bin.x0 === bin.x1
+          ? fmtValue(histo.metric, bin.x0)
+          : `${fmtValue(histo.metric, bin.x0)} – ${fmtValue(histo.metric, bin.x1)}`;
+      return (
+        `<path class="bar" d="${barPath(x, baselineY - h, barW, h)}">` +
+        `<title>${escapeHtml(`${range} · ${bin.count} ${S.binTooltipSuffix}`)}</title></path>`
+      );
+    })
+    .join('');
+  return (
+    `<figure class="histo">` +
+    `<figcaption>${escapeHtml(metricHeading(histo.metric))} ` +
+    `<span class="muted">${escapeHtml(nSamples(histo.okCount))}</span></figcaption>` +
+    `<svg viewBox="0 0 ${HISTO_W} ${HISTO_H}" width="${HISTO_W}" height="${HISTO_H}" role="img" ` +
+    `aria-label="${escapeHtml(`${metricHeading(histo.metric)} ${S.histogramEmptyNote}`)}">` +
+    bars +
+    `<rect class="axis" x="0" y="${baselineY}" width="${HISTO_W}" height="1"></rect>` +
+    `</svg>` +
+    `<div class="histo-axis"><span>${escapeHtml(
+      fmtValue(histo.metric, histo.min),
+    )}</span><span>${escapeHtml(fmtValue(histo.metric, histo.max))}</span></div>` +
+    `</figure>`
+  );
+}
+
+// -------------------------------------------------- drill-down (Route → …)
+
+function navigationRowHtml(nav: NavigationView, metricNames: string[]): string {
+  const iso = new Date(nav.ts).toISOString();
+  const time = iso.slice(11, 23);
+  const coldFlag = nav.coldStart === true ? ` <span class="flag cold">${escapeHtml(S.coldStartFlag)}</span>` : '';
+  const cells = metricNames
+    .map((name) => {
+      const metric = nav.vitals[name];
+      if (metric === undefined) return `<td class="num muted">—</td>`;
+      if (metric.status === 'ok' && typeof metric.value === 'number') {
+        return `<td class="num">${escapeHtml(fmtValue(name, metric.value))}</td>`;
+      }
+      return `<td class="num muted">${escapeHtml(reasonLabel(String(metric.status)))}</td>`;
+    })
+    .join('');
+  const outcome =
+    nav.executionStatus === 'unavailable'
+      ? `<span class="muted">${escapeHtml(S.outcomeUnavailable)}</span>`
+      : nav.executionStatus === 'passed'
+        ? `<span class="muted">passed</span>`
+        : `<span class="flag bad">${escapeHtml(
+            nav.executionStatus === 'crashed' ? S.outcomeCrashed : nav.executionStatus,
+          )}</span>`;
+  return (
+    `<tr>` +
+    `<td class="num" title="${escapeHtml(iso)}">${escapeHtml(time)}${coldFlag}</td>` +
+    `<td class="url">${escapeHtml(nav.url)}</td>` +
+    cells +
+    `<td>${outcome}</td>` +
+    `</tr>`
+  );
+}
+
+function engineHtml(engine: EngineView, metricNames: string[], soloEngine: boolean): string {
+  const navHead =
+    `<tr><th>${escapeHtml(S.timeColumn)}</th><th class="url">${escapeHtml(S.urlColumn)}</th>` +
+    metricNames.map((n) => `<th class="num">${escapeHtml(metricHeading(n))}</th>`).join('') +
+    `<th>${escapeHtml(S.outcomeColumn)}</th></tr>`;
+  return (
+    `<details class="engine" data-session-id="${escapeHtml(engine.sessionId)}"${
+      soloEngine ? ' open' : ''
+    }>` +
+    `<summary><span class="engine-label" title="${escapeHtml(engine.sessionId)}">${escapeHtml(
+      engine.engineLabel,
+    )}</span> — ${escapeHtml(nSamples(engine.sampleCount))} · ${escapeHtml(
+      S.navigationsHeading,
+    )}</summary>` +
+    `<div class="table-scroll"><table class="navs"><thead>${navHead}</thead><tbody>` +
+    engine.navigations.map((nav) => navigationRowHtml(nav, metricNames)).join('') +
+    `</tbody></table></div>` +
+    `</details>`
+  );
+}
+
+/** The per-Engine p75 spread — rendered only when a Test ran on >1 Engine.
+ *  Shown side by side; never adjudicated. */
+function engineSpreadHtml(group: TestGroupView, metricNames: string[]): string {
+  if (group.engines.length < 2) return ''; // single-Engine runs read naturally
+  const head =
+    `<tr><th>${escapeHtml(S.engineWord)}</th>` +
+    metricNames
+      .map((n) => `<th class="num">${escapeHtml(metricHeading(n))} ${S.p75}</th>`)
+      .join('') +
+    `</tr>`;
+  const rows = group.engines
+    .map(
+      (engine) =>
+        `<tr><td data-session-id="${escapeHtml(engine.sessionId)}" title="${escapeHtml(
+          engine.sessionId,
+        )}">${escapeHtml(engine.engineLabel)}</td>` +
+        metricNames
+          .map((n) => {
+            const p75 = engine.p75s[n];
+            return `<td class="num">${
+              p75 === null || p75 === undefined ? '—' : escapeHtml(fmtValue(n, p75))
+            }</td>`;
+          })
+          .join('') +
+        `</tr>`,
+    )
+    .join('');
+  return (
+    `<div class="spread"><h4>${escapeHtml(S.engineSpreadHeading)}</h4>` +
+    `<div class="table-scroll"><table class="spread-table"><thead>${head}</thead><tbody>${rows}</tbody></table></div></div>`
+  );
+}
+
+function testGroupHtml(group: TestGroupView, metricNames: string[], soloTest: boolean): string {
+  const label = group.legacy ? S.legacyTestGroup : group.label;
+  const soloEngine = soloTest && group.engines.length === 1;
+  return (
+    `<details class="test-group"${soloTest ? ' open' : ''}>` +
+    `<summary>${escapeHtml(label)} — ${escapeHtml(nSamples(group.sampleCount))}</summary>` +
+    engineSpreadHtml(group, metricNames) +
+    group.engines.map((engine) => engineHtml(engine, metricNames, soloEngine)).join('') +
+    `</details>`
+  );
+}
+
+function drillHtml(route: RouteView, metricNames: string[], index: number, colSpan: number): string {
+  const blendNote = route.blended
+    ? `<p class="blend-note">${escapeHtml(`${route.testCount} Tests — ${S.blendCaveat}`)}</p>`
+    : '';
+  const histos =
+    route.histograms.length > 0
+      ? `<section><h3>${escapeHtml(S.distributionsHeading)}</h3><div class="histo-grid">` +
+        route.histograms.map(histogramHtml).join('') +
+        `</div></section>`
+      : '';
+  const soloTest = route.tests.length === 1;
+  const tests =
+    `<section><h3>${escapeHtml(S.testsHeading)}</h3>` +
+    route.tests.map((group) => testGroupHtml(group, metricNames, soloTest)).join('') +
+    `</section>`;
+  return (
+    `<tr id="drill-${index}" class="drill" hidden><td colspan="${colSpan}">` +
+    blendNote +
+    histos +
+    tests +
+    `</td></tr>`
+  );
+}
+
+// ----------------------------------------------------------- landing table
+
+function routeRowHtml(route: RouteView, index: number): string {
+  const coldFlag =
+    route.coldStarts !== null && route.coldStarts > 0
+      ? `<span class="flag cold">${route.coldStarts} ${escapeHtml(S.coldStartsSuffix)}</span>`
+      : ''; // null renders as NOTHING — unidentifiable is not zero
+  const blendFlag = route.blended
+    ? `<span class="flag blend" title="${escapeHtml(S.blendCaveat)}">${escapeHtml(
+        S.blendedFlag,
+      )} · ${route.testCount} ${escapeHtml(S.testsHeading)}</span>`
+    : '';
+  // Flags sit on their own line under the Route so they never widen the column.
+  const flags = coldFlag || blendFlag ? `<div class="flags">${coldFlag}${blendFlag}</div>` : '';
+  return (
+    `<tr class="route-row">` +
+    `<td class="route-col">` +
+    `<button class="expand" aria-expanded="false" aria-controls="drill-${index}" title="${escapeHtml(
+      S.expandHint,
+    )}">▸</button>` +
+    `<code>${escapeHtml(route.route)}</code>${flags}` +
+    `</td>` +
+    `<td class="num samples">${route.sampleCount}</td>` +
+    route.cells.map(metricCellHtml).join('') +
+    `</tr>`
+  );
+}
+
+function routeTableHtml(view: ReportView): string {
+  if (view.totalSamples === 0) {
+    return `<p class="no-samples">${escapeHtml(S.noSamples)}</p>`;
+  }
+  const colSpan = 2 + view.metricNames.length;
+  const head =
+    `<tr><th class="route-col">${escapeHtml(S.routeColumn)}</th>` +
+    `<th class="num">${escapeHtml(S.samplesColumn)}</th>` +
+    view.metricNames.map((n) => `<th class="num">${escapeHtml(metricHeading(n))}</th>`).join('') +
+    `</tr>`;
+  const body = view.routes
+    .map((route, i) => routeRowHtml(route, i) + drillHtml(route, view.metricNames, i, colSpan))
+    .join('');
+  return (
+    `<div class="table-scroll"><table class="routes"><thead>${head}</thead>` +
+    `<tbody>${body}</tbody></table></div>` +
+    `<p class="note">${escapeHtml(S.thresholdNote)} · ${escapeHtml(S.coverageNote)}</p>`
+  );
+}
+
+function enginesHtml(view: ReportView): string {
+  const items = view.sessions
+    .map((session) => {
+      const line =
+        session.artifact === 'present'
+          ? `${session.engineLabel} — ${nSamples(session.sampleCount)}`
+          : `${session.engineLabel} — ${S.noArtifact}`;
+      const unreadable =
+        session.unreadable.length > 0
+          ? ` (${session.unreadable.length} ${S.unreadableWord})`
+          : '';
+      return `<li${session.artifact === 'present' ? '' : ' class="no-artifact"'} title="${escapeHtml(
+        session.sessionId,
+      )}" data-session-id="${escapeHtml(session.sessionId)}">${escapeHtml(line + unreadable)}</li>`;
+    })
+    .join('');
+  return `<section><h2>${escapeHtml(S.enginesHeading)}</h2><ul class="engines">${items}</ul></section>`;
+}
+
+// ------------------------------------------------------------ page chrome
+
+// The one inline script: it toggles precomputed drill-down rows. It renders
+// nothing and decides nothing — every dot, grouping, and bin was computed at
+// build time and unit-tested in the view model.
 const INLINE_SCRIPT = `
-  var data = JSON.parse(document.getElementById('${DATA_BLOB_ID}').textContent);
-
-  // Canonical metric order first, then whatever else the open name set carried.
-  var KNOWN = ['ttfb', 'fcp', 'lcp', 'cls', 'inp'];
-  var names = [];
-  data.routes.forEach(function (row) {
-    Object.keys(row.metrics).forEach(function (n) {
-      if (names.indexOf(n) === -1) names.push(n);
+  document.querySelectorAll('button.expand').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var row = document.getElementById(btn.getAttribute('aria-controls'));
+      if (!row) return;
+      var opening = row.hasAttribute('hidden');
+      if (opening) row.removeAttribute('hidden');
+      else row.setAttribute('hidden', '');
+      btn.setAttribute('aria-expanded', String(opening));
+      btn.textContent = opening ? '\\u25BE' : '\\u25B8';
     });
   });
-  names.sort(function (a, b) {
-    var ia = KNOWN.indexOf(a), ib = KNOWN.indexOf(b);
-    if (ia !== -1 && ib !== -1) return ia - ib;
-    if (ia !== -1) return -1;
-    if (ib !== -1) return 1;
-    return a < b ? -1 : 1;
-  });
-
-  function fmt(name, value) {
-    if (name === 'cls') return String(Math.round(value * 100000) / 100000);
-    return Math.round(value) + ' ms';
-  }
-
-  function el(tag, className, text) {
-    var node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined) node.textContent = text;
-    return node;
-  }
-
-  var engines = document.getElementById('engines');
-  data.sessions.forEach(function (s) {
-    var line = s.artifact === 'present'
-      ? s.engineLabel + ' — ' + s.sampleCount + ' Samples'
-      : s.engineLabel + ' — no artifact';
-    if (s.unreadable.length > 0) line += ' (' + s.unreadable.length + ' unreadable)';
-    var li = el('li', s.artifact === 'present' ? '' : 'no-artifact', line);
-    li.title = s.sessionId;
-    engines.appendChild(li);
-  });
-
-  var mount = document.getElementById('route-table');
-  if (data.samples.length === 0) {
-    mount.appendChild(el('p', 'no-samples', 'no samples — this Report carried no vitals records'));
-  } else {
-    var table = el('table');
-    var thead = el('thead');
-    var headRow = el('tr');
-    headRow.appendChild(el('th', 'route-col', 'Route'));
-    headRow.appendChild(el('th', '', 'Samples'));
-    names.forEach(function (n) {
-      headRow.appendChild(el('th', '', n.toUpperCase() + ' p75'));
-    });
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-
-    var tbody = el('tbody');
-    data.routes.forEach(function (row) {
-      var tr = el('tr');
-      tr.appendChild(el('td', 'route-col', row.route));
-      tr.appendChild(el('td', 'num', String(row.sampleCount)));
-      names.forEach(function (n) {
-        var m = row.metrics[n];
-        var td = el('td', 'num');
-        if (!m || m.ok === 0) {
-          // Nothing measured: the reason-shaped coverage, never a 0.
-          td.appendChild(el('span', 'not-measured', '—'));
-          td.appendChild(el('small', 'coverage', m ? '0 of ' + m.total : 'not carried'));
-        } else {
-          td.appendChild(el('span', 'value', fmt(n, m.p75)));
-          td.appendChild(el('small', 'coverage', m.ok + ' of ' + m.total));
-        }
-        tr.appendChild(td);
-      });
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    mount.appendChild(table);
-  }
 `;
 
+// Palette: the dataviz reference instance — chart chrome/ink in both modes;
+// status steps (good/warning/critical) are mode-invariant by design and are
+// never used for anything but the p75 threshold verdict.
 const STYLE = `
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 72rem; padding: 0 1rem; }
-  h1 { font-size: 1.4rem; }
-  .meta { color: #666; font-size: 0.85rem; }
-  #engines { list-style: none; padding: 0; font-size: 0.9rem; }
-  #engines li { padding: 0.15rem 0; }
-  #engines li.no-artifact { color: #b00; }
-  table { border-collapse: collapse; margin-top: 1rem; }
-  th, td { padding: 0.4rem 0.9rem; border-bottom: 1px solid #ccc; text-align: right; }
-  th.route-col, td.route-col { text-align: left; font-family: ui-monospace, monospace; }
-  td.num .coverage { display: block; color: #777; font-weight: normal; }
-  .not-measured { color: #999; }
-  .no-samples { font-size: 1.1rem; color: #b00; }
+  :root {
+    color-scheme: light dark;
+    --page: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;
+    --band-good: #0ca30c; --band-ni: #fab219; --band-poor: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0d0d0d; --surface: #1a1a19;
+      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0 auto; max-width: 76rem; padding: 1.5rem 1.25rem 3rem;
+    background: var(--page); color: var(--ink); line-height: 1.45;
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.05rem; margin: 1.75rem 0 0.5rem; }
+  h3 { font-size: 0.95rem; margin: 1.1rem 0 0.5rem; }
+  h4 { font-size: 0.85rem; margin: 0.9rem 0 0.35rem; color: var(--ink-2); font-weight: 600; }
+  .meta { color: var(--ink-2); font-size: 0.85rem; margin: 0; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .badge {
+    display: inline-block; font-size: 0.7rem; font-weight: 600; color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.55rem;
+    vertical-align: 0.15rem; margin-left: 0.5rem; background: var(--surface);
+  }
+  .note { color: var(--muted); font-size: 0.75rem; }
+  .muted { color: var(--muted); font-weight: normal; }
+
+  ul.engines { list-style: none; padding: 0; margin: 0.25rem 0; font-size: 0.9rem; }
+  ul.engines li { padding: 0.1rem 0; }
+  ul.engines li.no-artifact { color: var(--band-poor); }
+
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 0.9rem; }
+  table.routes { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+  th, td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { text-align: left; font-weight: 600; color: var(--ink-2); font-size: 0.78rem; }
+  th.num, td.num, td.metric { text-align: right; }
+  th.num { text-align: right; }
+  td.num, td.metric, td.samples { font-variant-numeric: tabular-nums; }
+  tbody tr:last-child > td { border-bottom: none; }
+  td.route-col { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  td.route-col code { font-size: 0.9rem; }
+
+  button.expand {
+    font: inherit; color: var(--ink-2); background: none; border: none; cursor: pointer;
+    padding: 0 0.4rem 0 0; margin: 0;
+  }
+  .flag {
+    display: inline-block; font-family: system-ui, sans-serif; font-size: 0.68rem;
+    color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px;
+    padding: 0 0.45rem; margin-left: 0.45rem; vertical-align: 0.1rem; white-space: nowrap;
+  }
+  .flag.bad { color: var(--band-poor); border-color: var(--band-poor); }
+  td.route-col .flags { margin: 0.2rem 0 0 1.05rem; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  td.route-col .flags .flag { margin-left: 0; }
+
+  td.metric .lead { font-size: 1.02rem; font-weight: 650; white-space: nowrap; }
+  td.metric .lead.reason { font-weight: normal; font-size: 0.85rem; color: var(--muted); }
+  td.metric .shape { font-size: 0.72rem; color: var(--ink-2); white-space: nowrap; }
+  td.metric .coverage, td .coverage { font-size: 0.72rem; color: var(--muted); }
+  .dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 0.4rem; vertical-align: 0.05rem;
+  }
+  .dot-good { background: var(--band-good); }
+  .dot-needs-improvement { background: var(--band-ni); }
+  .dot-poor { background: var(--band-poor); }
+
+  tr.drill > td { background: var(--page); padding: 0.75rem 1rem 1.25rem; }
+  .blend-note {
+    font-size: 0.8rem; color: var(--ink-2); background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--band-ni);
+    border-radius: 4px; padding: 0.45rem 0.7rem; margin: 0.25rem 0 0.5rem;
+  }
+  .histo-grid { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+  figure.histo { margin: 0; }
+  figure.histo figcaption { font-size: 0.78rem; font-weight: 600; color: var(--ink-2); margin-bottom: 0.2rem; }
+  figure.histo svg { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
+  figure.histo .bar { fill: var(--series-1); }
+  figure.histo .axis { fill: var(--baseline); }
+  .histo-axis { display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  details { margin: 0.4rem 0; }
+  details > summary { cursor: pointer; font-size: 0.88rem; }
+  details.test-group { border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.7rem; background: var(--surface); }
+  details.engine { margin-left: 1rem; }
+  details.engine > summary .engine-label { font-weight: 600; }
+  table.navs, table.spread-table { background: var(--surface); font-size: 0.8rem; margin-top: 0.35rem; }
+  table.navs td, table.navs th, table.spread-table td, table.spread-table th { padding: 0.3rem 0.6rem; }
+  table.navs td.url { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.72rem; max-width: 26rem; overflow-wrap: anywhere; }
+  .spread { margin: 0.4rem 0 0.6rem; }
+
+  .no-samples { font-size: 1.05rem; color: var(--band-poor); }
 `;
 
 /** Render the whole report as one self-contained HTML document. */
 export function renderHtml(data: ReportData): string {
+  const view = buildView(data);
+  const engineCountLine =
+    `${nSamples(view.totalSamples)}` +
+    ` · ${view.engineCount} ${view.engineCount === 1 ? S.engineWord : S.enginesHeading}`;
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Web Vitals — Report ${escapeHtml(data.masterId)}</title>
+<title>${escapeHtml(`${S.title} ${data.masterId}`)}</title>
 <style>${STYLE}</style>
 </head>
 <body>
-<h1>Web Vitals — Report ${escapeHtml(data.masterId)}</h1>
-<p class="meta">lab / synthetic data · generated ${escapeHtml(data.generatedAt)} · p75 over pooled Attributed Samples, coverage beside every value</p>
-<ul id="engines"></ul>
-<div id="route-table"></div>
+<header>
+<h1>${escapeHtml(`${S.title} ${data.masterId}`)}</h1>
+<p class="meta">${escapeHtml(`${S.generated} ${data.generatedAt} · ${engineCountLine}`)}</p>
+</header>
+${enginesHtml(view)}
+<section>
+<h2>${escapeHtml(S.routesHeading)}<span class="badge">${escapeHtml(S.labData)}</span></h2>
+${routeTableHtml(view)}
+</section>
 <script type="application/json" id="${DATA_BLOB_ID}">${embedJson(data)}</script>
 <script>${INLINE_SCRIPT}</script>
 </body>
