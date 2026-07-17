@@ -107,9 +107,20 @@ export function isPushKilled(env: Env): boolean {
   return v === '0' || v === 'off' || v === 'false';
 }
 
-/** The BlazeMeter LOCATION (e.g. "us-west-1"), with a stable fallback for local runs. */
+/**
+ * The location tier. Confirmed on a live Engine: there is NO location-name env var and
+ * GET /sessions/{id} returns locationId:null at runtime, so the human name (us-west-1) is
+ * unavailable on the Engine — it is recovered from the master at dashboard fetch time. So:
+ * an explicit BZM_VITALS_LOCATION / LOCATION override wins; else the numeric Taurus
+ * location index as `loc-{n}` (keeps distinct locations on distinct series); else a stable
+ * fallback for local runs.
+ */
 export function resolveLocation(env: Env): string {
-  return env.LOCATION?.trim() || 'unknown-location';
+  const override = env.BZM_VITALS_LOCATION?.trim() || env.LOCATION?.trim();
+  if (override) return override;
+  const idx = env.TAURUS_LOCATIONS_INDEX?.trim();
+  if (idx !== undefined && idx !== '' && Number.isFinite(Number(idx))) return `loc-${Number(idx)}`;
+  return 'unknown-location';
 }
 
 /**

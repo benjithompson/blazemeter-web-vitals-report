@@ -183,8 +183,11 @@ describe('env readers — activation and identity, all from named vars only', ()
     }
   });
 
-  it('resolveLocation reads LOCATION, with a stable fallback', () => {
+  it('resolveLocation: override wins; else loc-{TAURUS_LOCATIONS_INDEX}; else fallback', () => {
     expect(resolveLocation({ LOCATION: 'eu-west-1' })).toBe('eu-west-1');
+    expect(resolveLocation({ BZM_VITALS_LOCATION: 'my-loc' })).toBe('my-loc');
+    // No LOCATION on a real Engine — fall back to the numeric Taurus location index.
+    expect(resolveLocation({ TAURUS_LOCATIONS_INDEX: '2' })).toBe('loc-2');
     expect(resolveLocation({})).toBe('unknown-location');
   });
 
