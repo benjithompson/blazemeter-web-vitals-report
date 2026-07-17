@@ -1,0 +1,65 @@
+// Attribution — where a Sample becomes an Attributed Sample.
+//
+// A Sample is what exists in a zip; an Attributed Sample is what can be
+// reasoned about (CONTEXT.md). The dashboard stamps masterId / sessionId /
+// locationId at fetch time from the API context of the zip the Sample came
+// from — a raw artifact file is not fully interpretable on its own, by design.
+// The two types are distinct and never share a name.
+
+import type { DashboardSample } from './parse.js';
+
+/** Where a Sample came from: the library's collector, or the incumbent's
+ *  performance-audit records through the legacy adapter. */
+export type SampleProvenance = 'collector' | 'legacy';
+
+/** The fetch-time identity of one Engine's zip. */
+export interface EngineRef {
+  masterId: string;
+  /** The sessionId (r-v4-…) — the true Engine identity; the only join key. */
+  sessionId: string;
+  locationId: string;
+  /** For humans: "us-west-1" or "us-west-1 #2". Never key on it. */
+  engineLabel: string;
+}
+
+/** A Sample plus the Report and Engine identity stamped at fetch. */
+export interface AttributedSample extends EngineRef {
+  provenance: SampleProvenance;
+  sample: DashboardSample;
+}
+
+/**
+ * Engine Labels for a Report's session list: "{locationId} #{ordinal}" when a
+ * location has more than one Engine, plain "{locationId}" when it has exactly
+ * one — the common single-Engine case reads naturally. Ordinals follow the API's
+ * session order.
+ */
+export function engineLabels(
+  sessions: Array<{ sessionId: string; locationId: string }>,
+): Map<string, string> {
+  const perLocation = new Map<string, number>();
+  for (const s of sessions) {
+    perLocation.set(s.locationId, (perLocation.get(s.locationId) ?? 0) + 1);
+  }
+  const ordinal = new Map<string, number>();
+  const labels = new Map<string, string>();
+  for (const s of sessions) {
+    if (perLocation.get(s.locationId)! > 1) {
+      const n = (ordinal.get(s.locationId) ?? 0) + 1;
+      ordinal.set(s.locationId, n);
+      labels.set(s.sessionId, `${s.locationId} #${n}`);
+    } else {
+      labels.set(s.sessionId, s.locationId);
+    }
+  }
+  return labels;
+}
+
+/** Stamp one Sample with the identity of the zip it was extracted from. */
+export function attributeSample(
+  sample: DashboardSample,
+  provenance: SampleProvenance,
+  engine: EngineRef,
+): AttributedSample {
+  return { ...engine, provenance, sample };
+}

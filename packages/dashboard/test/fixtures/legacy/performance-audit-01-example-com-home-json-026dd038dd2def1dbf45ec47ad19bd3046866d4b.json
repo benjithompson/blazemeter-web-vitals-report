@@ -1,0 +1,20 @@
+{
+  "url": "https://example.com/",
+  "generatedAt": "2026-07-16T21:19:05.069Z",
+  "navigation": {
+    "domContentLoadedMs": 1889.399999999965,
+    "loadEventMs": 2445.5,
+    "firstByteMs": 167.79999999998836
+  },
+  "coreWebVitals": {
+    "fcp": 2104,
+    "lcp": 2104,
+    "cls": 0,
+    "inp": null,
+    "ttfb": 167.79999999998836,
+    "fullpageloadtime": 2445.5
+  },
+  "resourceCount": 84,
+  "requestCount": 87,
+  "failedRequests": 0
+}

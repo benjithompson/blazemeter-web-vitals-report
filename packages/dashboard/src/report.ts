@@ -1,0 +1,115 @@
+// Build the ReportData — the object the emitted HTML embeds and Seam 2 parses
+// back out. Walks a cached master's extracted session directories, parses
+// canonical Samples, adapts legacy records, attributes everything with the
+// Engine identity from the manifest, and aggregates crudely.
+//
+// A file that LOOKS like a record but cannot be read is recorded per-file
+// under its session as unreadable, with a reason — loud, never silently
+// misread and never silently dropped. Files that are neither canonical Samples
+// nor legacy audit records (bzt.log, config.yml, the html report twins…) are
+// simply not records, and are ignored.
+
+import { readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import type { MasterManifest } from './cache.js';
+import { isSampleAttachment, parseSampleJson } from './parse.js';
+import { adaptLegacyAuditRecord, isLegacyAuditJsonName } from './legacy-adapter.js';
+import { attributeSample, engineLabels, type AttributedSample } from './attribute.js';
+import { aggregateRoutes, type RouteRow } from './aggregate.js';
+
+export interface UnreadableFile {
+  file: string;
+  reason: string;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  locationId: string;
+  status: string;
+  engineLabel: string;
+  /** 'no-artifact' — the Engine emitted no zip. Listed, never silently absent. */
+  artifact: 'present' | 'no-artifact';
+  sampleCount: number;
+  unreadable: UnreadableFile[];
+}
+
+/** Everything the emitted HTML embeds. Issues #6/#7 extend this shape. */
+export interface ReportData {
+  masterId: string;
+  /** When this HTML was generated — not when the Report ran. */
+  generatedAt: string;
+  sessions: SessionSummary[];
+  routes: RouteRow[];
+  samples: AttributedSample[];
+}
+
+/** Read every record out of a cached, extracted master directory. */
+export async function buildReportData(
+  manifest: MasterManifest,
+  masterDir: string,
+): Promise<ReportData> {
+  const labels = engineLabels(
+    manifest.sessions.map((s) => ({ sessionId: s.sessionId, locationId: s.locationId })),
+  );
+
+  const sessions: SessionSummary[] = [];
+  const samples: AttributedSample[] = [];
+
+  for (const session of manifest.sessions) {
+    const engine = {
+      masterId: manifest.masterId,
+      sessionId: session.sessionId,
+      locationId: session.locationId,
+      engineLabel: labels.get(session.sessionId)!,
+    };
+    const summary: SessionSummary = {
+      sessionId: session.sessionId,
+      locationId: session.locationId,
+      status: session.status,
+      engineLabel: engine.engineLabel,
+      artifact: session.artifact,
+      sampleCount: 0,
+      unreadable: [],
+    };
+    sessions.push(summary);
+    if (session.artifact !== 'present') continue;
+
+    const sessionDir = path.join(masterDir, session.sessionId);
+    for (const file of (await readdir(sessionDir)).sort()) {
+      if (isSampleAttachment(file)) {
+        const parsed = parseSampleJson(await readFile(path.join(sessionDir, file), 'utf8'));
+        if (parsed.ok) {
+          samples.push(attributeSample(parsed.sample, 'collector', engine));
+          summary.sampleCount += 1;
+        } else {
+          summary.unreadable.push({ file, reason: parsed.reason });
+        }
+      } else if (isLegacyAuditJsonName(file)) {
+        const raw = await readFile(path.join(sessionDir, file), 'utf8');
+        let record: unknown;
+        try {
+          record = JSON.parse(raw);
+        } catch (err) {
+          summary.unreadable.push({ file, reason: `not valid JSON: ${(err as Error).message}` });
+          continue;
+        }
+        const adapted = adaptLegacyAuditRecord(record);
+        if (adapted.ok) {
+          samples.push(attributeSample(adapted.sample, 'legacy', engine));
+          summary.sampleCount += 1;
+        } else {
+          summary.unreadable.push({ file, reason: adapted.reason });
+        }
+      }
+      // Anything else is not a record; ignore it.
+    }
+  }
+
+  return {
+    masterId: manifest.masterId,
+    generatedAt: new Date().toISOString(),
+    sessions,
+    routes: aggregateRoutes(samples),
+    samples,
+  };
+}
