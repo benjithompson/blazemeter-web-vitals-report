@@ -39,6 +39,8 @@ import {
   type ExecutionOutcome,
   type ExecutionStatus,
 } from 'bzm-vitals-format';
+import { Pusher, resolveFlushMs } from './pusher.js';
+import { createDestinationsFromEnv } from './blazemeter-destination.js';
 
 /** The binding the in-page trap calls to hand a raw reading back to Node. */
 const REPORT_BINDING = '__bzmVitalsReport';
@@ -359,7 +361,12 @@ function testIdentity(testInfo: TestInfo): TestIdentity {
  * requests. Order matters — the binding and init script must exist before the page
  * navigates, so the trap the first document runs can call back.
  */
-async function attachCollector(page: Page, testInfo: TestInfo, state: CollectorState): Promise<void> {
+async function attachCollector(
+  page: Page,
+  testInfo: TestInfo,
+  state: CollectorState,
+  pusher: Pusher,
+): Promise<void> {
   const identity = testIdentity(testInfo);
   // The DERIVED per-Engine worker count (Taurus's --workers), never a declared concurrency.
   const workers = testInfo.config.workers ?? null;
@@ -397,6 +404,11 @@ async function attachCollector(page: Page, testInfo: TestInfo, state: CollectorS
         failedRequests: state.failedRequests,
       },
     };
+
+    // Best-effort push: hand the SAME neutral Sample to the worker pusher. Synchronous,
+    // cheap, and a no-op when the push subsystem is off (no creds / local run) — so the
+    // on-disk two-step below is never gated on, nor slowed by, the network path.
+    pusher.enqueue(sample);
 
     // The mandatory two-step. outputPath() is per-test, so its sha1-basenamed
     // attachment copy is unique across workers/repeats/Engines; the navigationIndex
@@ -512,6 +524,11 @@ type CollectorFixtures = {
   _collectorState: CollectorState;
 };
 
+type CollectorWorkerFixtures = {
+  /** Internal — the worker-scoped best-effort pusher. Not for testers. */
+  _vitalsPusher: Pusher;
+};
+
 /**
  * The auto-fixture graph. Overriding `page` means the collector rides along on the exact
  * page the test drives — journey vitals, not a cold re-navigation — and the tester
@@ -521,8 +538,28 @@ type CollectorFixtures = {
  * _collectorState is a dependency of BOTH page and vitals, so it sets up first and tears
  * down LAST — after page's teardown flush. That is why the Outcome write lives in ITS
  * teardown: every Sample is already on disk, and testInfo.status is final there.
+ *
+ * _vitalsPusher is WORKER-scoped: it sets up once when the worker starts and drains once
+ * when the worker finishes all its tests (Phase 2). It is the ONLY place on the Engine
+ * our code reliably runs — a Playwright custom reporter is not viable there (Taurus
+ * launches with `--reporter`, overriding config reporters). When no destination is
+ * enabled (local run, no creds) it is inert: `enqueue` is a no-op and no timer is set.
  */
-export const test = base.extend<CollectorFixtures>({
+export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
+  _vitalsPusher: [
+    async ({}, use) => {
+      const pusher = new Pusher({
+        destinations: createDestinationsFromEnv(),
+        flushMs: resolveFlushMs(process.env),
+      });
+      pusher.start();
+      await use(pusher);
+      // Worker teardown: stop the timer and drain the tail within a bounded budget.
+      await pusher.close();
+    },
+    { scope: 'worker', auto: true },
+  ],
+
   _collectorState: async ({}, use, testInfo) => {
     const state: CollectorState = {
       nextNavigationIndex: 1,
@@ -550,8 +587,8 @@ export const test = base.extend<CollectorFixtures>({
     { auto: true },
   ],
 
-  page: async ({ page, _collectorState }, use, testInfo) => {
-    await attachCollector(page, testInfo, _collectorState);
+  page: async ({ page, _collectorState, _vitalsPusher }, use, testInfo) => {
+    await attachCollector(page, testInfo, _collectorState, _vitalsPusher);
     try {
       await use(page);
     } finally {

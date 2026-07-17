@@ -80,8 +80,45 @@ Likewise, non-Chromium projects still emit Samples: CLS arrives as
 - **One Outcome per test execution**: `passed | failed | timedOut | skipped`
   plus retry. A *missing* Outcome means the execution crashed before
   finishing — the dashboard reads that absence as a signal.
-- The collector reads no environment variables at all — it never dumps
-  `process.env` (or your session tokens) into a downloadable artifact.
+
+The on-disk records above are the authoritative output and are written on
+every run, credentials or none. The collector reads only the **named** env
+vars documented below — never the whole of `process.env`, so your session
+tokens never reach a downloadable artifact.
+
+## Live push to BlazeMeter (optional)
+
+When it runs on a BlazeMeter Engine **with API-key credentials present**, the
+collector additionally pushes each measured vital to BlazeMeter's custom
+time-series API *during the run*, so LCP/CLS/INP/TTFB/FCP show up in that
+master's **Timeline report** — overlaid on the same wall-clock axis as the
+backend load — within seconds of being measured.
+
+This is a **supplement, not a replacement**: the on-disk Samples/Outcomes and
+the HTML report are unchanged and remain the record of truth. Adoption is still
+one import; the push turns itself on only when credentials **and** a resolvable
+master are both present, and does nothing otherwise (so a local
+`npx playwright test` behaves exactly as before — files only, no network).
+
+The push is strictly best-effort: it is never awaited by your test, and a slow
+or failed push never slows, perturbs, or fails the run. A metric that could not
+be measured is simply **absent** from the Timeline — never sent as a fake `0`.
+
+Enable it by setting the same discrete API-key vars the dashboard uses on the
+test (`BLAZEMETER_API_KEY_ID` / `BLAZEMETER_API_KEY_SECRET`). No `config.yml`
+or `playwright.config.ts` change is needed. Optional knobs, all via env:
+
+| env var | default | purpose |
+|---|---|---|
+| `BLAZEMETER_API_KEY_ID` / `_SECRET` | — | api-key credentials; **both** required to push |
+| `BZM_VITALS_PUSH` | on | set to `0` / `off` / `false` to disable pushing even with credentials |
+| `BLAZEMETER_MASTER_ID` | — | target master; overrides auto-discovery from `SESSION_ID` |
+| `BLAZEMETER_API_BASE` | `https://a.blazemeter.com` | override for EU / on-prem BlazeMeter |
+| `BZM_VITALS_PROFILE` | `Web Vitals` | the Timeline profile name |
+| `BZM_VITALS_FLUSH_MS` | `10000` | how often buffered points are sent |
+
+The credential travels only in the `Authorization` header and is never written
+to any Sample, log, or artifact.
 
 ## 🔴 Keep your API key out of git
 
