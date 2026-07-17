@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc --build",
     "typecheck": "tsc --build",
-    "test": "vitest run"
+    "test": "tsc --build && vitest run"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.40.0"
