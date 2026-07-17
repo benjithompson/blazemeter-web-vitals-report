@@ -204,36 +204,45 @@ describe('env readers — activation and identity, all from named vars only', ()
     expect(readDiscreteCredentials({ BLAZEMETER_API_KEY: '/tmp/key.json' })).toBeNull();
   });
 
-  it('the pointer vars redirect to arbitrarily-named env vars (BlazeMeter managed secrets)', () => {
-    // A managed secret named "apikeyid" (lowercase-only) reaches the worker as
-    // BZM_SECRET_apikeyid; the pointer var names it so the collector reads it.
+  it('reads the managed-secret convention BZM_SECRET_apikeyid/apikeysecret with no other config', () => {
+    // Listing secrets named apikeyid/apikeysecret injects exactly these — nothing else needed.
+    expect(
+      readDiscreteCredentials({ BZM_SECRET_apikeyid: 'k', BZM_SECRET_apikeysecret: 's' }),
+    ).toEqual({ id: 'k', secret: 's' });
+    // Direct vars take precedence over the convention when both are present.
     expect(
       readDiscreteCredentials({
-        BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_apikeyid',
-        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_apikeysecret',
-        BZM_SECRET_apikeyid: 'vk',
-        BZM_SECRET_apikeysecret: 'vs',
+        BLAZEMETER_API_KEY_ID: 'direct-id',
+        BLAZEMETER_API_KEY_SECRET: 'direct-secret',
+        BZM_SECRET_apikeyid: 'conv-id',
+        BZM_SECRET_apikeysecret: 'conv-secret',
+      }),
+    ).toEqual({ id: 'direct-id', secret: 'direct-secret' });
+    // Still all-or-nothing.
+    expect(readDiscreteCredentials({ BZM_SECRET_apikeyid: 'k' })).toBeNull();
+  });
+
+  it('the pointer vars redirect to arbitrarily-named env vars (secrets named other than the convention)', () => {
+    // A managed secret named "mykeyid" reaches the worker as BZM_SECRET_mykeyid; the
+    // pointer var names it so the collector reads it — a non-convention name.
+    expect(
+      readDiscreteCredentials({
+        BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_mykeyid',
+        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_mykeysecret',
+        BZM_SECRET_mykeyid: 'vk',
+        BZM_SECRET_mykeysecret: 'vs',
       }),
     ).toEqual({ id: 'vk', secret: 'vs' });
-    // A pointer that names a missing var yields null (all-or-nothing).
+    // A pointer that names a missing var, with no convention fallback present, yields null.
     expect(
-      readDiscreteCredentials({ BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_apikeyid', BZM_SECRET_apikeyid: 'vk' }),
+      readDiscreteCredentials({ BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_mykeyid', BZM_SECRET_mykeyid: 'vk' }),
     ).toBeNull();
-    // With the pointers set, the default BLAZEMETER_API_KEY_* vars are NOT consulted.
+    // Each pointer is independent — one redirected, one default direct var.
     expect(
       readDiscreteCredentials({
-        BZM_VITALS_KEY_ID_ENV: 'BZM_SECRET_apikeyid',
-        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_apikeysecret',
-        BLAZEMETER_API_KEY_ID: 'ignored',
-        BLAZEMETER_API_KEY_SECRET: 'ignored',
-      }),
-    ).toBeNull();
-    // Each pointer is independent — one redirected, one default.
-    expect(
-      readDiscreteCredentials({
-        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_apikeysecret',
+        BZM_VITALS_KEY_SECRET_ENV: 'BZM_SECRET_mykeysecret',
         BLAZEMETER_API_KEY_ID: 'k',
-        BZM_SECRET_apikeysecret: 'vs',
+        BZM_SECRET_mykeysecret: 'vs',
       }),
     ).toEqual({ id: 'k', secret: 'vs' });
   });

@@ -122,21 +122,20 @@ to any Sample, log, or artifact.
 
 **Keeping the key out of `config.yml`:** use [BlazeMeter
 secrets](https://help.blazemeter.com) instead of putting the key in an uploaded
-file. Secret names are lowercase-only, so a secret reaches the worker as
-`BZM_SECRET_<name>` (e.g. `BZM_SECRET_apikeyid`) rather than `BLAZEMETER_API_KEY_ID`.
-Two **pointer** vars tell the collector which env var holds each credential — they
-carry only a var *name*, never the value, so the key stays out of the config:
+file. Name two managed secrets `apikeyid` and `apikeysecret` (secret names are
+lowercase-only) and list them — listing a secret injects it into the worker env as
+`BZM_SECRET_<name>`, which the collector reads by convention. Nothing else needed:
 
 ```yaml
 secrets:
-  - apikeyid        # managed secret holding the api-key id
-  - apikeysecret    # managed secret holding the api-key secret
-settings:
-  env:
-    BZM_VITALS_KEY_ID_ENV: BZM_SECRET_apikeyid
-    BZM_VITALS_KEY_SECRET_ENV: BZM_SECRET_apikeysecret
+  - apikeyid        # managed secret holding the api-key id     -> BZM_SECRET_apikeyid
+  - apikeysecret    # managed secret holding the api-key secret -> BZM_SECRET_apikeysecret
 # vault-integration: <id>   # only for an external/on-prem vault, not managed secrets
 ```
+
+Using different secret names? Point the collector at them with
+`BZM_VITALS_KEY_ID_ENV` / `BZM_VITALS_KEY_SECRET_ENV` (each carries only a var
+*name*, never the value) — e.g. `BZM_VITALS_KEY_ID_ENV: BZM_SECRET_myid`.
 
 ## 🔴 Keep your API key out of git
 
