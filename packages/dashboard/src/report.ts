@@ -96,22 +96,36 @@ export async function buildReportData(
     if (session.artifact !== 'present') continue;
 
     const sessionDir = path.join(masterDir, session.sessionId);
+    // The artifacts zip carries each record TWICE when Taurus flattens the
+    // test-results tree in beside the attachments dir: the sha1-suffixed
+    // attachment copy, plus a bare fixed-name survivor of the flattening
+    // collision (last writer wins — observed on master 82731327, where it
+    // double-counted the final Execution per Engine). Two files in one session
+    // carrying the identical record are one Sample: distinct Navigations
+    // always differ in ts/navigationIndex, so content identity is safe.
+    const seenRecords = new Set<string>();
+    const firstSighting = (parsed: unknown): boolean => {
+      const key = JSON.stringify(parsed);
+      if (seenRecords.has(key)) return false;
+      seenRecords.add(key);
+      return true;
+    };
     for (const file of (await readdir(sessionDir)).sort()) {
       if (isSampleAttachment(file)) {
         const parsed = parseSampleJson(await readFile(path.join(sessionDir, file), 'utf8'));
-        if (parsed.ok) {
+        if (!parsed.ok) {
+          summary.unreadable.push({ file, reason: parsed.reason });
+        } else if (firstSighting(parsed.sample)) {
           samples.push(attributeSample(parsed.sample, 'collector', engine));
           summary.sampleCount += 1;
-        } else {
-          summary.unreadable.push({ file, reason: parsed.reason });
         }
       } else if (isOutcomeAttachment(file)) {
         const parsed = parseOutcomeJson(await readFile(path.join(sessionDir, file), 'utf8'));
-        if (parsed.ok) {
+        if (!parsed.ok) {
+          summary.unreadable.push({ file, reason: parsed.reason });
+        } else if (firstSighting(parsed.outcome)) {
           outcomes.push({ sessionId: session.sessionId, outcome: parsed.outcome });
           summary.outcomeCount += 1;
-        } else {
-          summary.unreadable.push({ file, reason: parsed.reason });
         }
       } else if (isLegacyAuditJsonName(file)) {
         const raw = await readFile(path.join(sessionDir, file), 'utf8');
@@ -123,11 +137,11 @@ export async function buildReportData(
           continue;
         }
         const adapted = adaptLegacyAuditRecord(record);
-        if (adapted.ok) {
+        if (!adapted.ok) {
+          summary.unreadable.push({ file, reason: adapted.reason });
+        } else if (firstSighting(adapted.sample)) {
           samples.push(attributeSample(adapted.sample, 'legacy', engine));
           summary.sampleCount += 1;
-        } else {
-          summary.unreadable.push({ file, reason: adapted.reason });
         }
       }
       // Anything else is not a record; ignore it.
