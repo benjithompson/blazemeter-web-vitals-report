@@ -23,11 +23,13 @@
 // thin bars with 2px surface gaps and rounded data-ends, in drill-in only.
 // Vocabulary (CONTEXT.md) comes from UI_STRINGS, nowhere else.
 
+import type { OutcomeSummary } from './aggregate.js';
 import type { ReportData } from './report.js';
 import { UI_STRINGS as S } from './ui-strings.js';
 import {
-  buildView,
+  buildReportVariants,
   xFraction,
+  type ReportVariants,
   type EngineView,
   type HistogramView,
   type MetricCell,
@@ -99,9 +101,12 @@ const BAND_LABEL: Record<ThresholdBand, string> = {
   poor: S.bandPoor,
 };
 
-/** "no-interaction" → "no interaction"; "not-carried" → the UI's phrasing. */
+/** "no-interaction" → "no interaction"; "not-carried" → the UI's phrasing.
+ *  'unknown' is the legacy adapter's status and is displayed DISTINCTLY from
+ *  'unsupported' and 'no interaction' — the incumbent cannot say why. */
 function reasonLabel(reason: string): string {
   if (reason === 'not-carried') return S.notCarried;
+  if (reason === 'unknown') return S.unknownLegacy;
   return reason.replace(/-/g, ' ');
 }
 
@@ -460,7 +465,7 @@ function navigationRowHtml(nav: NavigationView, metricNames: string[]): string {
       : nav.executionStatus === 'passed'
         ? `<span class="muted">passed</span>`
         : `<span class="flag bad">${escapeHtml(
-            nav.executionStatus === 'crashed' ? S.outcomeCrashed : nav.executionStatus,
+            nav.executionStatus === 'crashed' ? S.outcomeCrashedBeforeFinishing : nav.executionStatus,
           )}</span>`;
   return (
     `<tr>` +
@@ -538,7 +543,13 @@ function testGroupHtml(group: TestGroupView, metricNames: string[], soloTest: bo
   );
 }
 
-function drillHtml(route: RouteView, metricNames: string[], index: number, colSpan: number): string {
+function drillHtml(
+  route: RouteView,
+  metricNames: string[],
+  idPrefix: string,
+  index: number,
+  colSpan: number,
+): string {
   const blendNote = route.blended
     ? `<p class="blend-note">${escapeHtml(`${route.testCount} Tests — ${S.blendCaveat}`)}</p>`
     : '';
@@ -554,7 +565,7 @@ function drillHtml(route: RouteView, metricNames: string[], index: number, colSp
     route.tests.map((group) => testGroupHtml(group, metricNames, soloTest)).join('') +
     `</section>`;
   return (
-    `<tr id="drill-${index}" class="drill" hidden><td colspan="${colSpan}">` +
+    `<tr id="drill-${idPrefix}-${index}" class="drill" hidden><td colspan="${colSpan}">` +
     blendNote +
     histos +
     tests +
@@ -564,7 +575,7 @@ function drillHtml(route: RouteView, metricNames: string[], index: number, colSp
 
 // ----------------------------------------------------------- landing table
 
-function routeRowHtml(route: RouteView, index: number): string {
+function routeRowHtml(route: RouteView, idPrefix: string, index: number): string {
   const coldFlag =
     route.coldStarts !== null && route.coldStarts > 0
       ? `<span class="flag cold">${route.coldStarts} ${escapeHtml(S.coldStartsSuffix)}</span>`
@@ -579,7 +590,7 @@ function routeRowHtml(route: RouteView, index: number): string {
   return (
     `<tr class="route-row">` +
     `<td class="route-col">` +
-    `<button class="expand" aria-expanded="false" aria-controls="drill-${index}" title="${escapeHtml(
+    `<button class="expand" aria-expanded="false" aria-controls="drill-${idPrefix}-${index}" title="${escapeHtml(
       S.expandHint,
     )}">▸</button>` +
     `<code>${escapeHtml(route.route)}</code>${flags}` +
@@ -590,7 +601,7 @@ function routeRowHtml(route: RouteView, index: number): string {
   );
 }
 
-function routeTableHtml(view: ReportView): string {
+function routeTableHtml(view: ReportView, idPrefix: string): string {
   if (view.totalSamples === 0) {
     return `<p class="no-samples">${escapeHtml(S.noSamples)}</p>`;
   }
@@ -601,12 +612,91 @@ function routeTableHtml(view: ReportView): string {
     view.metricNames.map((n) => `<th class="num">${escapeHtml(metricHeading(n))}</th>`).join('') +
     `</tr>`;
   const body = view.routes
-    .map((route, i) => routeRowHtml(route, i) + drillHtml(route, view.metricNames, i, colSpan))
+    .map(
+      (route, i) =>
+        routeRowHtml(route, idPrefix, i) + drillHtml(route, view.metricNames, idPrefix, i, colSpan),
+    )
     .join('');
   return (
     `<div class="table-scroll"><table class="routes"><thead>${head}</thead>` +
     `<tbody>${body}</tbody></table></div>` +
     `<p class="note">${escapeHtml(S.thresholdNote)} · ${escapeHtml(S.coverageNote)}</p>`
+  );
+}
+
+// -------------------------------------- outcome breakdown + the toggle (#9)
+
+/** The breakdown line — "4 of 50 Executions failed" — next to the numbers the
+ *  include/exclude choice changes. When outcome-awareness is unavailable it
+ *  SAYS SO in words; it never implies all-passed. */
+function outcomeLineText(summary: OutcomeSummary): string {
+  if (!summary.aware) return S.outcomesUnavailable;
+  const c = summary.counts;
+  // The itemization of the FAILED head-count only; skipped is not a failure
+  // and is appended separately so it never reads as part of the head-count.
+  const parts: string[] = [];
+  if (c['failed']) parts.push(`${c['failed']} failed`);
+  if (c['timedOut']) parts.push(`${c['timedOut']} timed out`);
+  if (c['crashed']) parts.push(`${c['crashed']} ${S.outcomeCrashedBeforeFinishing}`);
+  const skippedSuffix = c['skipped'] ? ` (and ${c['skipped']} skipped)` : '';
+  if (summary.excludable > 0) {
+    const head = `${summary.excludable} ${S.ofWord} ${summary.total} ${S.executionsWord} failed`;
+    const onlyPlainFailed = parts.length === 1 && (c['failed'] ?? 0) === summary.excludable;
+    return (onlyPlainFailed ? head : `${head} — ${parts.join(' · ')}`) + skippedSuffix;
+  }
+  if (c['skipped']) {
+    return `${c['passed'] ?? 0} ${S.ofWord} ${summary.total} ${S.executionsWord} passed — ${c['skipped']} skipped`;
+  }
+  return `all ${summary.total} ${S.executionsWord} passed`;
+}
+
+/** The visible control. Include is the DEFAULT (checked). When there is
+ *  nothing to exclude the toggle is disabled WITH the reason stated — never
+ *  silently missing. */
+function toggleHtml(variants: ReportVariants): string {
+  const enabled = variants.excluded !== null;
+  const reason = enabled
+    ? null
+    : variants.outcomes.aware
+      ? S.toggleDisabledNothingExcludable
+      : S.toggleDisabledNoOutcomes;
+  return (
+    `<label class="toggle${enabled ? '' : ' disabled'}">` +
+    `<input type="checkbox" id="bzm-include-failed" checked${enabled ? '' : ' disabled'}> ` +
+    `${escapeHtml(S.includeFailedToggle)}</label>` +
+    (reason === null ? '' : `<span class="toggle-reason">${escapeHtml(reason)}</span>`)
+  );
+}
+
+/** "aggregates cover 3 of 4 Engines — 1 no artifact": stated whenever an
+ *  Engine emitted no zip, so a degraded run never reads as a clean one. */
+function subsetNoteHtml(view: ReportView): string {
+  if (view.enginesWithArtifact >= view.engineCount) return '';
+  const missing = view.engineCount - view.enginesWithArtifact;
+  return `<span class="subset-note">${escapeHtml(
+    `${S.subsetCovers} ${view.enginesWithArtifact} ${S.ofWord} ${view.engineCount} ${S.enginesHeading} — ${missing} ${S.noArtifact}`,
+  )}</span>`;
+}
+
+/** The strip under the Routes heading: breakdown line, toggle, subset note —
+ *  the choice sits visibly next to the numbers it changes. */
+function outcomeStripHtml(variants: ReportVariants): string {
+  return (
+    `<div class="outcomes">` +
+    `<span class="outcome-line">${escapeHtml(outcomeLineText(variants.outcomes))}</span>` +
+    toggleHtml(variants) +
+    subsetNoteHtml(variants.included) +
+    `</div>`
+  );
+}
+
+/** One fully server-rendered variant: Route table + timeline. The excluded
+ *  one opens by restating what it dropped, with the honest denominator. */
+function variantHtml(view: ReportView, idPrefix: string, note: string | null): string {
+  return (
+    (note === null ? '' : `<p class="excluded-note">${escapeHtml(note)}</p>`) +
+    routeTableHtml(view, idPrefix) +
+    timelineHtml(view)
   );
 }
 
@@ -631,9 +721,11 @@ function enginesHtml(view: ReportView): string {
 
 // ------------------------------------------------------------ page chrome
 
-// The one inline script: it toggles precomputed drill-down rows. It renders
-// nothing and decides nothing — every dot, grouping, and bin was computed at
-// build time and unit-tested in the view model.
+// The one inline script: it toggles precomputed drill-down rows, and swaps
+// which fully server-rendered variant (include/exclude failed Executions) is
+// visible. It renders nothing and decides nothing — every dot, grouping, bin,
+// and BOTH variants' every number were computed at build time and unit-tested
+// in the view model.
 const INLINE_SCRIPT = `
   document.querySelectorAll('button.expand').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -646,6 +738,21 @@ const INLINE_SCRIPT = `
       btn.textContent = opening ? '\\u25BE' : '\\u25B8';
     });
   });
+  (function () {
+    var toggle = document.getElementById('bzm-include-failed');
+    var included = document.getElementById('bzm-variant-included');
+    var excluded = document.getElementById('bzm-variant-excluded');
+    if (!toggle || toggle.disabled || !included || !excluded) return;
+    toggle.addEventListener('change', function () {
+      if (toggle.checked) {
+        included.removeAttribute('hidden');
+        excluded.setAttribute('hidden', '');
+      } else {
+        excluded.removeAttribute('hidden');
+        included.setAttribute('hidden', '');
+      }
+    });
+  })();
 `;
 
 // Palette: the dataviz reference instance — chart chrome/ink in both modes;
@@ -762,6 +869,21 @@ const STYLE = `
 
   .no-samples { font-size: 1.05rem; color: var(--band-poor); }
 
+  .outcomes {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1.25rem;
+    font-size: 0.85rem; margin: 0.25rem 0 0.75rem;
+  }
+  .outcomes .outcome-line { font-weight: 600; color: var(--ink-2); }
+  .outcomes label.toggle { cursor: pointer; color: var(--ink); user-select: none; }
+  .outcomes label.toggle.disabled { cursor: default; color: var(--muted); }
+  .outcomes .toggle-reason { color: var(--muted); font-size: 0.78rem; }
+  .outcomes .subset-note { color: var(--band-poor); font-size: 0.8rem; }
+  .excluded-note {
+    font-size: 0.8rem; color: var(--ink-2); background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--band-ni);
+    border-radius: 4px; padding: 0.45rem 0.7rem; margin: 0.25rem 0 0.5rem;
+  }
+
   section.timeline figure.tl { margin: 0 0 1.1rem; }
   .tl figcaption { font-size: 0.78rem; font-weight: 600; color: var(--ink-2); margin-bottom: 0.25rem; }
   .tl svg {
@@ -792,12 +914,32 @@ const STYLE = `
   .tl-reason { font-size: 0.85rem; color: var(--muted); margin: 0.4rem 0 1rem; }
 `;
 
-/** Render the whole report as one self-contained HTML document. */
+/** Render the whole report as one self-contained HTML document. Both toggle
+ *  variants are rendered server-side; the blob carries the RAW data once. */
 export function renderHtml(data: ReportData): string {
-  const view = buildView(data);
+  const variants = buildReportVariants(data);
+  const view = variants.included;
   const engineCountLine =
     `${nSamples(view.totalSamples)}` +
     ` · ${view.engineCount} ${view.engineCount === 1 ? S.engineWord : S.enginesHeading}`;
+
+  // Zero Samples: the static "no samples" paragraph carries the section; an
+  // outcome strip and a toggle over nothing would be noise, not honesty.
+  const strip = view.totalSamples > 0 ? outcomeStripHtml(variants) : '';
+  const excludedNote =
+    variants.excluded === null
+      ? null
+      : `${S.excludedNote} — ${variants.excluded.totalSamples} ${S.ofWord} ${view.totalSamples} ${S.samplesWord}`;
+  const body =
+    `<div id="bzm-variant-included">${variantHtml(view, 'inc', null)}</div>` +
+    (variants.excluded === null
+      ? ''
+      : `<div id="bzm-variant-excluded" hidden>${variantHtml(
+          variants.excluded,
+          'exc',
+          excludedNote,
+        )}</div>`);
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -814,9 +956,9 @@ export function renderHtml(data: ReportData): string {
 ${enginesHtml(view)}
 <section>
 <h2>${escapeHtml(S.routesHeading)}<span class="badge">${escapeHtml(S.labData)}</span></h2>
-${routeTableHtml(view)}
+${strip}
+${body}
 </section>
-${timelineHtml(view)}
 <script type="application/json" id="${DATA_BLOB_ID}">${embedJson(data)}</script>
 <script>${INLINE_SCRIPT}</script>
 </body>

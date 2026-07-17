@@ -135,9 +135,14 @@ describe('Seam 2 — probe Report (real bytes, two Engines, zero Samples)', () =
     expect(filesA.length).toBeGreaterThan(0);
     expect(filesA.sort()).toEqual(filesB.sort()); // the collision is real
 
-    // No vitals anywhere → "no samples", never a 0.
+    // No vitals anywhere → "no samples", never a 0 — STATICALLY rendered:
+    // the byte-test matches the server-emitted element, and the inline script
+    // carries no such text (it decides nothing).
     expect(data.samples).toHaveLength(0);
+    expect(html).toContain('<p class="no-samples">');
     expect(html).toMatch(/no samples/i);
+    const inlineScript = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+    expect(inlineScript).not.toMatch(/no samples/i);
   });
 });
 
@@ -249,6 +254,40 @@ describe('Seam 2 — canonical Samples across two Engines with colliding basenam
     // (Compared, never printed.)
     expect(html.includes(STUB_ENV.BLAZEMETER_API_KEY_ID!)).toBe(false);
     expect(html.includes(STUB_ENV.BLAZEMETER_API_KEY_SECRET!)).toBe(false);
+  });
+
+  it('prints the archived-Report latency notice pre-fetch on a cache miss — and never on a warm cache', async () => {
+    const zip = makeZip([
+      { name: name1, data: canonicalSample({ vitals: { lcp: { value: 1000, status: 'ok' } } }) },
+    ]);
+    const { transport } = stubApi('90000077', {
+      'r-v4-eng-a': { locationId: 'us-west-1', zip },
+    });
+    const coldLogs: string[] = [];
+    await runCli({
+      argv: ['--master', '90000077', '--out', outPath],
+      env: STUB_ENV,
+      transport,
+      cacheRoot,
+      log: (m) => coldLogs.push(m),
+    });
+    // The notice is a nicety, not a failure state — and it precedes the fetch.
+    expect(coldLogs[0]).toMatch(/archived Report may take a moment/);
+    expect(coldLogs[0]).toMatch(/latency, not failure/);
+
+    // Warm cache: no fetch is coming, so no latency notice either.
+    const warmLogs: string[] = [];
+    const throwing = recordingTransport(() => {
+      throw new Error('network call on a cached master');
+    });
+    await runCli({
+      argv: ['--master', '90000077', '--out', path.join(workDir, 'report-warm.html')],
+      env: {},
+      transport: throwing.transport,
+      cacheRoot,
+      log: (m) => warmLogs.push(m),
+    });
+    expect(warmLogs.some((m) => /may take a moment/.test(m))).toBe(false);
   });
 
   it('is cache-through: a second run does zero network calls', async () => {

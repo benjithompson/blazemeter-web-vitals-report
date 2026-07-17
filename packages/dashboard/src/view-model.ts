@@ -12,7 +12,17 @@
 // keyed by sessionId — the label rides along for humans and is never a key.
 
 import type { Metric } from '@bzm/vitals-format';
-import { NOT_CARRIED, percentile, routeOf, type MetricAggregate, type RouteRow } from './aggregate.js';
+import {
+  aggregateRoutes,
+  excludeFailedExecutions,
+  NOT_CARRIED,
+  percentile,
+  routeOf,
+  summarizeOutcomes,
+  type MetricAggregate,
+  type OutcomeSummary,
+  type RouteRow,
+} from './aggregate.js';
 import type { AttributedSample, SampleExecutionStatus } from './attribute.js';
 import type { ReportData, SessionSummary } from './report.js';
 import { threshold, type ThresholdBand } from './thresholds.js';
@@ -342,6 +352,10 @@ export interface ReportView {
   sessions: SessionSummary[];
   engineCount: number;
   multiEngine: boolean;
+  /** Engines that emitted a zip. When < engineCount the aggregates cover a
+   *  subset and the renderer says so visibly — a degraded run is never
+   *  silently reported as a clean one. */
+  enginesWithArtifact: number;
   totalSamples: number;
   routes: RouteView[];
   timeline: TimelineView;
@@ -550,8 +564,48 @@ export function buildView(data: ReportData): ReportView {
     sessions: data.sessions,
     engineCount: data.sessions.length,
     multiEngine: data.sessions.length > 1,
+    enginesWithArtifact: data.sessions.filter((s) => s.artifact === 'present').length,
     totalSamples: data.samples.length,
     routes,
     timeline: buildTimeline(data.samples, metricNames),
   };
+}
+
+// ------------------------------------------- the include-failed toggle (#9)
+
+/**
+ * Both variants of the report, built server-side. The inline script only swaps
+ * which one is visible — it decides nothing.
+ */
+export interface ReportVariants {
+  /** The breakdown behind "4 of 50 Executions failed" — and the toggle state. */
+  outcomes: OutcomeSummary;
+  /** Failed Executions INCLUDED — the default. The intuitive default (exclude)
+   *  is the harmful one: the real failures were budget breaches, so excluding
+   *  them deletes exactly the slowest Samples and flatters every percentile. */
+  included: ReportView;
+  /** The opt-out view, fully recomputed over excludeFailedExecutions(samples).
+   *  null exactly when the toggle has nothing to do: outcome-awareness is
+   *  unavailable (legacy — zero Outcome records anywhere) or no Execution
+   *  failed. The renderer then disables the toggle WITH the reason stated. */
+  excluded: ReportView | null;
+}
+
+/** Build both views from one ReportData. Pure — the blob's raw data is never
+ *  touched; each variant recomputes aggregates and timeline from its pool. */
+export function buildReportVariants(data: ReportData): ReportVariants {
+  const outcomes = summarizeOutcomes(data.samples, data.outcomes);
+  const included = buildView(data);
+  let excluded: ReportView | null = null;
+  if (outcomes.aware && outcomes.excludable > 0) {
+    const kept = excludeFailedExecutions(data.samples);
+    excluded = buildView({
+      ...data,
+      samples: kept,
+      // The kept Samples carry their flags from the FULL run — never re-marked
+      // over the subset, so a filtered-out Cold Start is a gap, not a promotion.
+      routes: aggregateRoutes(kept, { coldStartsPreMarked: true }),
+    });
+  }
+  return { outcomes, included, excluded };
 }

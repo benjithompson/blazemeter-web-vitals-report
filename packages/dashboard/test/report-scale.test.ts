@@ -126,6 +126,21 @@ describe.skipIf(!cachePresent)('report-scale: the real demo Report through the C
     expect(data.samples.every((s) => s.executionStatus === 'unavailable')).toBe(true);
   });
 
+  it('legacy Report: the toggle is disabled WITH the reason, and the breakdown says outcomes are unavailable — never all-passed', () => {
+    // Zero Outcome records anywhere → outcome-awareness unavailable. The line
+    // says so in words; the toggle exists but is disabled with its reason; no
+    // excluded variant is embedded at all.
+    expect(html).toContain('outcome records unavailable — legacy collector');
+    expect(html).toContain('id="bzm-include-failed" checked disabled');
+    expect(html).toContain('cannot exclude — outcome records unavailable');
+    expect(html).not.toContain('id="bzm-variant-excluded"');
+    expect(html).not.toMatch(/all \d+ Executions passed/);
+  });
+
+  it("renders INP's legacy 'unknown' distinctly — the incumbent cannot say why", () => {
+    expect(html).toContain('unknown — legacy collector cannot say why');
+  });
+
   it('emits no pre-signed URL and no external fetchable reference, even at real scale', () => {
     expect(html).not.toContain('storage.blazemeter.com');
     expect(html).not.toMatch(/<script[^>]+\bsrc\s*=/i);

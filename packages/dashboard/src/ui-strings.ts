@@ -55,9 +55,21 @@ export const UI_STRINGS = {
   urlColumn: 'URL',
   outcomeColumn: 'Execution',
   outcomeUnavailable: 'outcome unavailable',
-  outcomeCrashed: 'crashed',
+  unknownLegacy: 'unknown — legacy collector cannot say why',
   binTooltipSuffix: 'Samples',
   histogramEmptyNote: 'distribution over measured Samples in this Route',
+
+  // Outcome breakdown + the include-failed toggle (issue #9). Include is the
+  // DEFAULT: excluding failed Executions deletes exactly the slowest Samples
+  // (the real failures were CWV budget breaches), flattering every percentile.
+  executionsWord: 'Executions',
+  outcomesUnavailable: 'outcome records unavailable — legacy collector',
+  outcomeCrashedBeforeFinishing: 'crashed before finishing',
+  includeFailedToggle: 'include failed Executions',
+  toggleDisabledNoOutcomes: 'cannot exclude — outcome records unavailable',
+  toggleDisabledNothingExcludable: 'nothing to exclude — no Execution failed',
+  excludedNote: 'failed Executions excluded',
+  subsetCovers: 'aggregates cover',
 
   // Timeline — vitals over the run's wall-clock (below the Route table)
   timelineHeading: 'Timeline',
