@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/format" },
+    { "path": "packages/collector" },
+    { "path": "packages/dashboard" }
+  ]
+}

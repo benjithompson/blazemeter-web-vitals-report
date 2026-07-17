@@ -1,0 +1,22 @@
+{
+  "name": "@bzm/playwright-vitals",
+  "version": "0.1.0",
+  "description": "Journey web-vitals collector for Playwright suites on BlazeMeter — one changed import, one Sample per Navigation.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0"
+  },
+  "dependencies": {
+    "@bzm/vitals-format": "0.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}

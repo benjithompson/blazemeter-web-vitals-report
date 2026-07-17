@@ -1,0 +1,16 @@
+{
+  "name": "bzm-playwright-vitals-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "tsx": "^4.0.0"
+  }
+}

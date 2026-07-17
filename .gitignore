@@ -7,4 +7,12 @@ api-keys.json
 
 # Node
 node_modules/
+dist/
+
+# Fetched artifact cache — re-fetchable from the API, never committed
+.artifact-cache/
+
+# Playwright run output (Seam 1 harness scratch)
+test-results/
+playwright-report/
 
