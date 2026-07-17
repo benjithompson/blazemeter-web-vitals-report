@@ -188,10 +188,11 @@ describe('env readers — activation and identity, all from named vars only', ()
     expect(resolveLocation({})).toBe('unknown-location');
   });
 
-  it('resolveEngine: explicit override wins; else a #-ordinal from the Taurus index; else #1', () => {
+  it('resolveEngine: explicit override wins; else a #-ordinal from TAURUS_SESSIONS_INDEX; else #1', () => {
     expect(resolveEngine({ BZM_VITALS_ENGINE: '#7' })).toBe('#7');
-    expect(resolveEngine({ TAURUS_INDEX_ALL: '0' })).toBe('#1'); // 0-based → #1
-    expect(resolveEngine({ TAURUS_INDEX_ALL: '2' })).toBe('#3');
+    // Confirmed on a live Engine: TAURUS_SESSIONS_INDEX is a 1-based per-Engine ordinal.
+    expect(resolveEngine({ TAURUS_SESSIONS_INDEX: '1' })).toBe('#1');
+    expect(resolveEngine({ TAURUS_SESSIONS_INDEX: '2' })).toBe('#2');
     expect(resolveEngine({})).toBe('#1');
   });
 

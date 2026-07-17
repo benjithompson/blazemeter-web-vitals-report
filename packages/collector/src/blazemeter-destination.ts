@@ -113,17 +113,18 @@ export function resolveLocation(env: Env): string {
 }
 
 /**
- * The per-location Engine label. An explicit BZM_VITALS_ENGINE override wins; otherwise
- * a `#`-ordinal derived from Taurus's 0-based sequential index (TAURUS_INDEX_ALL) so
- * concurrent Engines never share a series; otherwise `#1`. (The exact Taurus var is
- * confirmed on the live acceptance run; the override keeps this correct meanwhile.)
+ * The per-Engine label. An explicit BZM_VITALS_ENGINE override wins; otherwise a
+ * `#`-ordinal from Taurus's 1-based per-Engine session index (TAURUS_SESSIONS_INDEX) so
+ * concurrent Engines never share a series; otherwise `#1`. (Confirmed on a live Engine:
+ * TAURUS_SESSIONS_INDEX is 1 and 2 across two Engines; TAURUS_INDEX_ALL does not exist.
+ * The value is unique per Engine, so with the location tier it never pools distinct ones.)
  */
 export function resolveEngine(env: Env): string {
   const override = env.BZM_VITALS_ENGINE?.trim();
   if (override) return override;
-  const idx = env.TAURUS_INDEX_ALL?.trim();
+  const idx = env.TAURUS_SESSIONS_INDEX?.trim();
   if (idx !== undefined && idx !== '' && Number.isFinite(Number(idx))) {
-    return `#${Number(idx) + 1}`;
+    return `#${Number(idx)}`;
   }
   return '#1';
 }
