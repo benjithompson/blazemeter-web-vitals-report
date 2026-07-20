@@ -40,7 +40,7 @@ import {
   type ExecutionStatus,
 } from 'bzm-vitals-format';
 import { Pusher, resolveFlushMs } from './pusher.js';
-import { createDestinationsFromEnv } from './blazemeter-destination.js';
+import { createDestinationsFromEnv } from './destinations.js';
 
 /** The binding the in-page trap calls to hand a raw reading back to Node. */
 const REPORT_BINDING = '__bzmVitalsReport';

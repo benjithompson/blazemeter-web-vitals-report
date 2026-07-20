@@ -9,14 +9,11 @@ import type { Sample, Metric } from 'bzm-vitals-format';
 import {
   sampleToIntervals,
   buildInjectionBody,
-  routeOf,
-  resolveLocation,
-  resolveEngine,
-  isPushKilled,
-  isPerEngine,
   readDiscreteCredentials,
   type MappingContext,
 } from '../src/blazemeter-destination';
+// Route derivation + identity/kill-switch readers moved to the shared cross-sink module.
+import { routeOf, resolveLocation, resolveEngine, isPushKilled, isPerEngine } from '../src/shared';
 
 const CTX: MappingContext = {
   masterId: 82_731_957,

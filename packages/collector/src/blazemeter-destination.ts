@@ -14,6 +14,11 @@
 
 import type { Sample, Metric } from 'bzm-vitals-format';
 import type { Destination } from './pusher.js';
+// Route derivation and the identity/kill-switch env readers live in the shared cross-sink
+// module now (both sinks resolve identity from one source). Imported, not re-exported:
+// importers take them from the shared module directly, which keeps the single-file
+// standalone bundle free of a dangling relative re-export that would break at load.
+import { routeOf, resolveIdentity, type Env } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // 1. PURE mapping — the injection contract, expressed as data transforms.
@@ -40,20 +45,6 @@ export interface MappingContext {
 const ROOT_TIER = 'Web Vitals';
 /** Tier separator. The tier ORDER is the locked decision; this exact string is not. */
 const TIER_SEP = ' | ';
-
-/**
- * Derive the Route for a Sample — the SAME routing the file report uses (dashboard
- * aggregate.ts routeOf): a declared Route wins verbatim; otherwise the URL pathname,
- * with a hand-rolled query/fragment strip for addresses the URL parser rejects.
- */
-export function routeOf(sample: Sample): string {
-  if (sample.route !== undefined) return sample.route;
-  try {
-    return new URL(sample.url).pathname;
-  } catch {
-    return sample.url.split(/[?#]/, 1)[0]!;
-  }
-}
 
 /**
  * Encode one metric into its Timeline leaf + integer value, or null when it must not be
@@ -106,58 +97,6 @@ export function buildInjectionBody(samples: Sample[], ctx: MappingContext): { in
 // ---------------------------------------------------------------------------
 // 1b. Env readers — activation + identity, from NAMED vars only.
 // ---------------------------------------------------------------------------
-
-type Env = Record<string, string | undefined>;
-
-/** The global kill switch: BZM_VITALS_PUSH in {0, off, false} disables ALL pushing. */
-export function isPushKilled(env: Env): boolean {
-  const v = (env.BZM_VITALS_PUSH ?? '').trim().toLowerCase();
-  return v === '0' || v === 'off' || v === 'false';
-}
-
-/**
- * Per-Engine breakdown vs per-location aggregation. Default is AGGREGATE (no Engine tier)
- * — a run with many Engines would otherwise flood the Timeline with #1…#N series per
- * route/metric. Set BZM_VITALS_PER_ENGINE to 1/true/on to keep each Engine as its own
- * series (e.g. to spot one slow Engine within a location).
- */
-export function isPerEngine(env: Env): boolean {
-  const v = (env.BZM_VITALS_PER_ENGINE ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'on';
-}
-
-/**
- * The location tier. Confirmed on a live Engine: there is NO location-name env var and
- * GET /sessions/{id} returns locationId:null at runtime, so the human name (us-west-1) is
- * unavailable on the Engine — it is recovered from the master at dashboard fetch time. So:
- * an explicit BZM_VITALS_LOCATION / LOCATION override wins; else the numeric Taurus
- * location index as `loc-{n}` (keeps distinct locations on distinct series); else a stable
- * fallback for local runs.
- */
-export function resolveLocation(env: Env): string {
-  const override = env.BZM_VITALS_LOCATION?.trim() || env.LOCATION?.trim();
-  if (override) return override;
-  const idx = env.TAURUS_LOCATIONS_INDEX?.trim();
-  if (idx !== undefined && idx !== '' && Number.isFinite(Number(idx))) return `loc-${Number(idx)}`;
-  return 'unknown-location';
-}
-
-/**
- * The per-Engine label. An explicit BZM_VITALS_ENGINE override wins; otherwise a
- * `#`-ordinal from Taurus's 1-based per-Engine session index (TAURUS_SESSIONS_INDEX) so
- * concurrent Engines never share a series; otherwise `#1`. (Confirmed on a live Engine:
- * TAURUS_SESSIONS_INDEX is 1 and 2 across two Engines; TAURUS_INDEX_ALL does not exist.
- * The value is unique per Engine, so with the location tier it never pools distinct ones.)
- */
-export function resolveEngine(env: Env): string {
-  const override = env.BZM_VITALS_ENGINE?.trim();
-  if (override) return override;
-  const idx = env.TAURUS_SESSIONS_INDEX?.trim();
-  if (idx !== undefined && idx !== '' && Number.isFinite(Number(idx))) {
-    return `#${Number(idx)}`;
-  }
-  return '#1';
-}
 
 /** api-key id + secret — the pair that ever names the credential in this module. */
 export interface Credentials {
@@ -259,14 +198,16 @@ export class BlazeMeterDestination implements Destination {
 
   constructor(deps: BlazeMeterDeps = {}) {
     const env = deps.env ?? process.env;
+    // Kill switch + location/engine tiers resolve identically for every sink.
+    const identity = resolveIdentity(env);
     this.creds = readDiscreteCredentials(env);
-    this.killed = isPushKilled(env);
+    this.killed = identity.killed;
     this.apiBase = (env.BLAZEMETER_API_BASE?.trim() || DEFAULT_API_BASE).replace(/\/+$/, '');
     this.profileName = env.BZM_VITALS_PROFILE?.trim() || DEFAULT_PROFILE;
-    this.location = resolveLocation(env);
+    this.location = identity.location;
     this.locationExplicit = Boolean(env.BZM_VITALS_LOCATION?.trim() || env.LOCATION?.trim());
-    // null → aggregate per location (the default); a label → per-Engine series.
-    this.engine = isPerEngine(env) ? resolveEngine(env) : null;
+    // engine: null → aggregate per location (the default); a label → per-Engine series.
+    this.engine = identity.engine;
     this.sessionId = env.SESSION_ID?.trim() || undefined;
     this.masterIdOverride = coerceMasterId(env.BLAZEMETER_MASTER_ID);
     this.fetchImpl = deps.fetch ?? ((url, init) => fetch(url, init) as unknown as Promise<FetchResponse>);
@@ -365,12 +306,4 @@ export class BlazeMeterDestination implements Destination {
       clearTimeout(timer);
     }
   }
-}
-
-/** Build the enabled destination set from the environment. Only BlazeMeter ships today;
- *  a future sink is one more entry here. The pusher re-checks isEnabled(), so returning a
- *  disabled destination is harmless — but we keep the set tight. */
-export function createDestinationsFromEnv(deps: BlazeMeterDeps = {}): Destination[] {
-  const bzm = new BlazeMeterDestination(deps);
-  return bzm.isEnabled() ? [bzm] : [];
 }

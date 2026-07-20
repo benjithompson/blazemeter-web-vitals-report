@@ -1,0 +1,28 @@
+# Local InfluxDB 2.x for the guarded integration test (influx-integration.test.ts).
+#
+#   docker compose -f docker-compose.influx.yml up -d
+#   export BZM_INFLUX_URL=http://localhost:8086 \
+#          BZM_INFLUX_ORG=perf BZM_INFLUX_BUCKET=vitals \
+#          BZM_INFLUX_TOKEN=dev-token-please-change
+#   npm test        # the integration test now runs instead of skipping
+#   docker compose -f docker-compose.influx.yml down -v
+#
+# The admin token below is the SAME value the test expects in BZM_INFLUX_TOKEN — it is a
+# throwaway local dev token, never a real credential.
+services:
+  influxdb:
+    image: influxdb:2.7
+    ports:
+      - '8086:8086'
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: dev
+      DOCKER_INFLUXDB_INIT_PASSWORD: dev-password
+      DOCKER_INFLUXDB_INIT_ORG: perf
+      DOCKER_INFLUXDB_INIT_BUCKET: vitals
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: dev-token-please-change
+    healthcheck:
+      test: ['CMD', 'influx', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
