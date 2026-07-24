@@ -1,0 +1,29 @@
+# Taurus config — this is what makes the BlazeMeter test a Playwright-executor
+# test. Upload it alongside example.spec.ts, playwright.config.ts, package.json
+# and select it as the main script.
+#
+# concurrency 4 over 2 locations  ->  per Engine: --workers 2, --repeat-each 4.
+# With TWO tests in the spec each Engine runs 2 tests x 4 repeats = 8 test
+# executions (16 total) — small numbers on purpose; this example is a smoke of
+# the reporting flow, not a load test. Scale concurrency/iterations once it works.
+
+modules:
+  blazemeter:
+    # Must be false on accounts without provisioned dedicated IPs — true fails
+    # master creation with a generic "Failed to create master".
+    dedicated-ips: false
+
+execution:
+- executor: playwright
+  scenario: vitals
+  iterations: 2
+  concurrency: 4
+  locations:
+      us-west-1: 1    # two locations: the dashboard shows vitals per location
+      us-west-2: 1
+
+scenarios:
+    vitals:
+        script: example.spec.ts
+        browser: chromium
+        # no `test:` filter — run every test in the spec

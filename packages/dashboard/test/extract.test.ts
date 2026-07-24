@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readZipEntries, extractNamespaced } from '../src/extract.js';
+import { readZipEntries } from '../src/zip.js';
+import { extractNamespaced } from '../src/extract.js';
 import { makeZip } from './helpers/zip.js';
 
 let dest: string;

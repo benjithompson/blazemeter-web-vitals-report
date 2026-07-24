@@ -46,8 +46,15 @@ export interface CacheMasterOptions {
 }
 
 export function defaultCacheRoot(): string {
-  // src/ -> package -> packages -> repo root
-  return path.resolve(new URL('../../..', import.meta.url).pathname, '.artifact-cache');
+  // In-repo (packages/dashboard/src) or installed (node_modules/…/dist), walk
+  // src/ -> package -> packages|node_modules -> repo root. Anywhere else — the
+  // standalone single-file build run from wherever it was downloaded — walking
+  // up would land in an arbitrary parent directory, so cache under the cwd.
+  const here = new URL(import.meta.url).pathname;
+  if (/[\\/](?:node_modules|packages)[\\/]/.test(here)) {
+    return path.resolve(here, '../../../..', '.artifact-cache');
+  }
+  return path.resolve(process.cwd(), '.artifact-cache');
 }
 
 async function loadManifest(masterDir: string): Promise<MasterManifest | null> {

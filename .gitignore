@@ -29,4 +29,7 @@ packages/collector/test/fixtures/bzm-playwright-vitals.ts
 # Throwaway live-Engine acceptance kit (scaffolded on demand; upload-only, never committed)
 packages/collector/acceptance-kit/
 
+# The examples kit is meant to be copied, not developed in-repo — no lockfile noise
+examples/package-lock.json
+
 *.tsbuildinfo

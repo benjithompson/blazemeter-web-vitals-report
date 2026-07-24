@@ -15,7 +15,8 @@ import { mkdtemp, rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extractNamespaced, readZipEntries } from '../src/extract.js';
+import { extractNamespaced } from '../src/extract.js';
+import { readZipEntries } from '../src/zip.js';
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'probe');
 const SESSION_A = 'r-v4-6a596ee06d5a9077555455'; // us-west-1

@@ -15,7 +15,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readZipEntries } from '../src/extract.js';
+import { readZipEntries } from '../src/zip.js';
 import { makeZip } from '../test/helpers/zip.js';
 
 const MASTER = '82724289';

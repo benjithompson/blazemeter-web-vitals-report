@@ -1,0 +1,9 @@
+{
+  "name": "bzm-playwright-vitals-example",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^22.15.3",
+    "bzm-playwright-vitals": "^0.2.0"
+  }
+}

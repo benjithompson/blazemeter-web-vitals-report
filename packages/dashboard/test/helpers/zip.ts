@@ -1,5 +1,5 @@
 // A tiny STORE-method (no compression) zip writer for building test zips in
-// memory. yauzl reads STORE zips and verifies CRC32, so this is enough to
+// memory. src/zip.ts reads STORE zips and verifies CRC32, so this is enough to
 // exercise the extractor without shelling out. NOT used for the committed
 // fixture — that is real fetched bytes (see scripts/build-probe-fixture.ts).
 

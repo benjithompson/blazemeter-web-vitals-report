@@ -5,6 +5,7 @@
 
 export * from './http.js';
 export * from './api.js';
+export * from './zip.js';
 export * from './extract.js';
 export * from './cache.js';
 export * from './parse.js';

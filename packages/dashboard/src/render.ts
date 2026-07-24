@@ -25,7 +25,11 @@
 
 import type { OutcomeSummary } from './aggregate.js';
 import type { ReportData } from './report.js';
-import { UI_STRINGS as S } from './ui-strings.js';
+import { UI_STRINGS } from './ui-strings.js';
+
+// Aliased in code, not in the import — the standalone splice drops import
+// statements for inlined modules, and an import alias would vanish with them.
+const S = UI_STRINGS;
 import {
   buildReportVariants,
   xFraction,

@@ -8,45 +8,9 @@
 //
 // See SPEC.md → "Cross-Engine filename collision".
 
-import yauzl from 'yauzl';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-
-export interface ZipEntry {
-  /** The flat entry name — no entry in these zips contains a '/'. */
-  name: string;
-  data: Buffer;
-}
-
-/** Read every file entry out of a flat zip held entirely in memory. */
-export function readZipEntries(zipBytes: Buffer): Promise<ZipEntry[]> {
-  return new Promise((resolve, reject) => {
-    yauzl.fromBuffer(zipBytes, { lazyEntries: true }, (err, zip) => {
-      if (err || !zip) return reject(err ?? new Error('failed to open zip'));
-      const entries: ZipEntry[] = [];
-      zip.on('error', reject);
-      zip.on('end', () => resolve(entries));
-      zip.readEntry();
-      zip.on('entry', (entry) => {
-        // Directory entries end with '/'. These zips are flat, but guard anyway.
-        if (/\/$/.test(entry.fileName)) {
-          zip.readEntry();
-          return;
-        }
-        zip.openReadStream(entry, (streamErr, stream) => {
-          if (streamErr || !stream) return reject(streamErr ?? new Error('no stream'));
-          const chunks: Buffer[] = [];
-          stream.on('data', (c: Buffer) => chunks.push(c));
-          stream.on('error', reject);
-          stream.on('end', () => {
-            entries.push({ name: entry.fileName, data: Buffer.concat(chunks) });
-            zip.readEntry();
-          });
-        });
-      });
-    });
-  });
-}
+import { readZipEntries } from './zip.js';
 
 export interface ExtractResult {
   /** destRoot/{sessionId} */
