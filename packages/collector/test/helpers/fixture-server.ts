@@ -20,12 +20,30 @@ function page(title: string, body: string): string {
   <button id="target">click me</button>
   <script>
     // A late layout shift so #3 has a non-zero CLS to measure. Harmless to the tracer.
-    setTimeout(function () {
-      var d = document.createElement('div');
-      d.style.height = '120px';
-      d.textContent = 'late content';
-      document.body.insertBefore(d, document.body.firstChild);
-    }, 50);
+    // Timed from FIRST PAINT, not from script start: content inserted before anything
+    // was painted moves nothing, so the browser honestly reports no shift. (Measured on
+    // Playwright 1.63 under parallel load: first paint can land 400ms+ after the script
+    // runs.) The 1s backstop keeps the page shifting where paint timing is absent.
+    var shiftScheduled = false;
+    function scheduleShift() {
+      if (shiftScheduled) return;
+      shiftScheduled = true;
+      setTimeout(function () {
+        var d = document.createElement('div');
+        d.style.height = '120px';
+        d.textContent = 'late content';
+        document.body.insertBefore(d, document.body.firstChild);
+      }, 50);
+    }
+    try {
+      new PerformanceObserver(function (list) {
+        var es = list.getEntries();
+        for (var i = 0; i < es.length; i++) {
+          if (es[i].name === 'first-contentful-paint') scheduleShift();
+        }
+      }).observe({ type: 'paint', buffered: true });
+    } catch (e) {}
+    setTimeout(scheduleShift, 1000);
     // The click target does two things a spec can rely on:
     //  - burns ~30ms so the interaction's duration clears event-timing's 16ms
     //    durationThreshold floor (a no-op handler can finish under it and emit nothing);
