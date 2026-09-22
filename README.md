@@ -106,8 +106,10 @@ BlazeMeter account, and the file works offline forever.
   INP. That's correct, not broken.
 - Firefox/WebKit projects still report — CLS shows "unsupported" there
   (the browser lacks the API) rather than a fake 0.
-- Cross-site navigation (e.g. yoursite.com → othersite.com) currently loses
-  the record for the page being left. Keep journeys on one site.
+- Before each `goto()`, `reload()`, `goBack()` or `goForward()`, the collector
+  records the page being left. It waits for the next paint first, so a click
+  just before the navigation still counts for INP. The wait is usually a few
+  milliseconds and is always bounded.
 - Re-running the dashboard for the same master is instant — artifacts are
   cached locally in `.artifact-cache/` (also never committed).
 
