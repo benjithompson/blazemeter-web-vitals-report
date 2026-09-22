@@ -43,6 +43,6 @@
     "bzm-vitals-format": "0.2.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.45.0"
+    "@playwright/test": "^1.61.1"
   }
 }
