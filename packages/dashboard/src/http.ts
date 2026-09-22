@@ -18,8 +18,51 @@ export interface HttpInit {
 /** The seam the tests stub. The default implementation wraps global fetch. */
 export type Transport = (url: string, init?: HttpInit) => Promise<HttpResponse>;
 
-export const defaultTransport: Transport = (url, init) =>
-  fetch(url, init) as unknown as Promise<HttpResponse>;
+/** TLS codes Node reports when a proxy re-signs HTTPS with a root it doesn't trust. */
+const UNTRUSTED_CERT_CODES = new Set([
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'CERT_UNTRUSTED',
+]);
+
+/** Global fetch buries the TLS code on `cause` (possibly nested); walk the chain. */
+function untrustedCertCode(err: unknown): string | undefined {
+  for (let e = err, depth = 0; e && depth < 5; e = (e as { cause?: unknown }).cause, depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && UNTRUSTED_CERT_CODES.has(code)) return code;
+  }
+  return undefined;
+}
+
+/**
+ * Global fetch reports an untrusted certificate as a bare "fetch failed". Behind a
+ * corporate proxy that is the common case, so rethrow it naming the fix. npm's
+ * `cafile` doesn't reach Node's fetch — the fix must be Node-level.
+ */
+export function withCertHint(transport: Transport): Transport {
+  return async (url, init) => {
+    try {
+      return await transport(url, init);
+    } catch (err) {
+      const code = untrustedCertCode(err);
+      if (!code) throw err;
+      throw new Error(
+        `TLS certificate not trusted reaching ${new URL(url).host} (${code}). ` +
+          `A corporate proxy is probably re-signing HTTPS traffic. Make Node trust your ` +
+          `organization's root certificate: set NODE_OPTIONS=--use-system-ca (Node 22.15+/23.8+), ` +
+          `or set NODE_EXTRA_CA_CERTS to the root certificate's PEM file.`,
+        { cause: err },
+      );
+    }
+  };
+}
+
+export const defaultTransport: Transport = withCertHint(
+  (url, init) => fetch(url, init) as unknown as Promise<HttpResponse>,
+);
 
 export interface Credentials {
   id: string;
