@@ -36,7 +36,8 @@ export interface AttributedOutcome {
 
 /** The fetch-time identity of one Engine's zip. */
 export interface EngineRef {
-  masterId: string;
+  /** null for a local import with no master id given. */
+  masterId: string | null;
   /** The sessionId (r-v4-…) — the true Engine identity; the only join key. */
   sessionId: string;
   locationId: string;

@@ -347,7 +347,7 @@ export function buildTimeline(samples: AttributedSample[], metricNames: string[]
 }
 
 export interface ReportView {
-  masterId: string;
+  masterId: string | null;
   generatedAt: string;
   metricNames: string[];
   sessions: SessionSummary[];

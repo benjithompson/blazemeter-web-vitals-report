@@ -13,5 +13,6 @@ export * from './legacy-adapter.js';
 export * from './attribute.js';
 export * from './aggregate.js';
 export * from './report.js';
+export * from './local.js';
 export * from './render.js';
 export { runCli, type RunCliOptions } from './cli.js';

@@ -56,9 +56,15 @@ BlazeMeter account and the file works offline forever. Artifacts are cached in
 `.artifact-cache/`, so re-running for the same master is instant and needs no
 credentials.
 
+No network? Download each Engine's `artifacts.zip` from the report's **Logs**
+tab and run the single-file dashboard (below):
+`node bzm-vitals-dashboard.mjs --artifacts <zip-or-folder> --out report.html`.
+It needs no API key and makes no network calls. Do not use `npx` on an offline
+machine: when the package is not installed, `npx` contacts the npm registry.
+
 ## No npm registry? The single-file variants
 
-Both halves of the flow also travel as single generated `.ts` files, attached
+Both halves of the flow also travel as single generated files, attached
 to this repo's [GitHub releases](../../../releases/latest):
 
 - **Collector** — `bzm-playwright-vitals.ts`. Upload it as a *fifth* file next
@@ -72,14 +78,20 @@ to this repo's [GitHub releases](../../../releases/latest):
   the registry is never contacted for the collector. (You can also delete the
   `bzm-playwright-vitals` entry from `package.json`.)
 
-- **Dashboard** — `bzm-vitals-dashboard.ts`. Download it anywhere and run:
+- **Dashboard** — `bzm-vitals-dashboard.mjs`. Plain JavaScript: download it
+  anywhere and run it with Node 20 or later. No flags, no `npm install`, no `tsx`.
 
   ```sh
+  # offline, from downloaded artifacts:
+  node bzm-vitals-dashboard.mjs --artifacts <zip-or-folder> --out report.html
+  # from the API:
   export BLAZEMETER_API_KEY=path/to/api-key.json
-  npx tsx bzm-vitals-dashboard.ts --master <masterId> --out report.html
-  # or, zero-install on Node >= 23.6:
-  node bzm-vitals-dashboard.ts --master <masterId> --out report.html
+  node bzm-vitals-dashboard.mjs --master <masterId> --out report.html
   ```
+
+  `bzm-vitals-dashboard.ts` is the same code as TypeScript, for
+  `npx tsx bzm-vitals-dashboard.ts …` or `node bzm-vitals-dashboard.ts …` on
+  Node ≥ 23.6.
 
 Both files are build artifacts generated from the real package sources
 (`npm run build:standalone` in each package) — never a second source of truth.
