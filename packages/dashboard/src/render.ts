@@ -997,12 +997,29 @@ export function renderHtml(data: ReportData): string {
   const variants = buildReportVariants(data);
   const view = variants.included;
   // The Report name is the title; the master id stays visible in the link line
-  // beneath it, so the id is never lost. Falls back to the id when unnamed.
-  const heading = data.reportName ?? `${S.title} ${data.masterId}`;
-  const reportUrl = masterReportUrl(data.masterId);
+  // beneath it, so the id is never lost. Falls back to the id when unnamed, and
+  // to the local source when there is no id. A local import with no id has no
+  // BlazeMeter Report to link to, so it gets no link rather than a broken one.
+  const heading =
+    data.reportName ?? `${S.title} ${data.masterId ?? data.localSource ?? ''}`.trimEnd();
+  const reportUrl = data.masterId === null ? null : masterReportUrl(data.masterId);
+  const reportLinkHtml =
+    reportUrl === null
+      ? ''
+      : `<p class="report-link"><a href="${escapeHtml(reportUrl)}" title="${escapeHtml(
+          reportUrl,
+        )}">${escapeHtml(`${S.reportLink} ↗`)}</a></p>\n`;
   const engineCountLine =
     `${nSamples(view.totalSamples)}` +
     ` · ${view.engineCount} ${view.engineCount === 1 ? S.engineWord : S.enginesHeading}`;
+  const metaLine = [
+    data.masterId === null ? null : `${S.reportWord} ${data.masterId}`,
+    data.localSource === undefined ? null : `${S.importedFrom} ${data.localSource}`,
+    `${S.generated} ${data.generatedAt}`,
+    engineCountLine,
+  ]
+    .filter((part) => part !== null)
+    .join(' · ');
 
   // Zero Samples: the static "no samples" paragraph carries the section; an
   // outcome strip and a toggle over nothing would be noise, not honesty.
@@ -1032,12 +1049,7 @@ export function renderHtml(data: ReportData): string {
 <body>
 <header>
 <h1>${escapeHtml(heading)}</h1>
-<p class="report-link"><a href="${escapeHtml(reportUrl)}" title="${escapeHtml(reportUrl)}">${escapeHtml(
-    `${S.reportLink} ↗`,
-  )}</a></p>
-<p class="meta">${escapeHtml(
-    `${S.reportWord} ${data.masterId} · ${S.generated} ${data.generatedAt} · ${engineCountLine}`,
-  )}</p>
+${reportLinkHtml}<p class="meta">${escapeHtml(metaLine)}</p>
 </header>
 ${enginesHtml(view)}
 <section>

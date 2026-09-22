@@ -1,5 +1,6 @@
-// Seam test for the STANDALONE dashboard build (dist-standalone/bzm-vitals-dashboard.ts) —
-// the one-file variant a no-npm user downloads from a release. Same philosophy as the
+// Seam test for the STANDALONE dashboard builds (dist-standalone/bzm-vitals-dashboard.ts
+// and its plain-JavaScript twin .mjs) — the one-file variants a no-npm user downloads
+// from a release. Same philosophy as the
 // collector's standalone.test.ts: the artifact is REGENERATED here from the real sources
 // via the actual build script (staleness impossible), copied to a temp dir the way a
 // download lands, and run as a CHILD PROCESS — the exact invocation a user makes.
@@ -12,7 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,12 +63,16 @@ function canonicalSample(overrides: Record<string, unknown>): Buffer {
 
 let workDir: string;
 let standalonePath: string;
+let mjsPath: string;
 let source: string;
+let mjsSource: string;
 let referenceHtml: string;
+let artifactsZip: Buffer;
 
 beforeAll(async () => {
   const build = await buildStandalone();
   source = build.source;
+  mjsSource = build.mjsSource;
 
   // The temp dir plays the download directory: the artifact is copied there and the
   // child runs with it as cwd, so the standalone's cwd-based .artifact-cache default
@@ -75,6 +80,8 @@ beforeAll(async () => {
   workDir = await mkdtemp(path.join(tmpdir(), 'bzm-standalone-'));
   standalonePath = path.join(workDir, 'bzm-vitals-dashboard.ts');
   await copyFile(build.outFile, standalonePath);
+  mjsPath = path.join(workDir, 'bzm-vitals-dashboard.mjs');
+  await copyFile(build.mjsFile, mjsPath);
 
   // Cold fetch through the PACKAGE code path, stubbed transport, into the exact
   // cacheRoot the standalone child will resolve.
@@ -89,6 +96,7 @@ beforeAll(async () => {
     },
     { name: 'bzt.log', data: Buffer.from('noise') },
   ]);
+  artifactsZip = zip;
   const { transport } = recordingTransport((url) => {
     if (url.endsWith(`/masters/${MASTER_ID}/status`)) {
       return jsonResponse({
@@ -177,5 +185,49 @@ describe('the standalone file behaves as the package does', () => {
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('usage: bzm-vitals-dashboard');
+  }, 60_000);
+});
+
+// The .mjs is the portable variant: plain node, no tsx, no type stripping. The
+// child here is process.execPath and NOTHING else — if the .mjs needed tsx, a
+// loader, or a flag, these runs would fail.
+describe('the plain-JavaScript .mjs runs on bare node', () => {
+  it('resolves from node builtins alone and carries no TypeScript syntax', () => {
+    const importRe = /^import\s[^;]*?from\s+'([^']+)';/gm;
+    const specifiers = [...mjsSource.matchAll(importRe)].map((m) => m[1]!);
+    expect(specifiers.length).toBeGreaterThan(0);
+    for (const spec of specifiers) expect(spec).toMatch(/^node:/);
+    expect(mjsSource).not.toMatch(/^(?:export\s+)?interface\s/m);
+    expect(mjsSource).not.toMatch(/^(?:export\s+)?type\s+\w+\s*=/m);
+    expect(mjsSource.startsWith('#!/usr/bin/env node\n')).toBe(true);
+  });
+
+  it('against the warm cache, offline, it emits the package-identical blob', async () => {
+    await execFileP(process.execPath, [mjsPath, '--master', MASTER_ID, '--out', 'report-mjs.html'], {
+      cwd: workDir,
+    });
+
+    const data = parseBlob(await readFile(path.join(workDir, 'report-mjs.html'), 'utf8'));
+    const reference = parseBlob(referenceHtml);
+    expect({ ...data, generatedAt: null }).toEqual({ ...reference, generatedAt: null });
+  }, 60_000);
+
+  it('with --artifacts it reads a downloaded zip, with no credentials in the env', async () => {
+    await writeFile(path.join(workDir, 'artifacts.zip'), artifactsZip);
+    await execFileP(
+      process.execPath,
+      [mjsPath, '--artifacts', 'artifacts.zip', '--out', 'report-local.html'],
+      { cwd: workDir, env: { PATH: process.env.PATH } },
+    );
+
+    const data = parseBlob(await readFile(path.join(workDir, 'report-local.html'), 'utf8'));
+    const reference = parseBlob(referenceHtml);
+    expect(data.masterId).toBeNull();
+    expect(data.localSource).toBe('artifacts.zip');
+    // Same Samples as the API path — only the Engine identity differs.
+    const strip = (d: typeof data) =>
+      d.samples.map(({ sample, coldStart, executionStatus }) => ({ sample, coldStart, executionStatus }));
+    expect(strip(data)).toEqual(strip(reference));
+    expect(data.routes).toEqual(reference.routes);
   }, 60_000);
 });

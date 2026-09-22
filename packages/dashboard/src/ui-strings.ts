@@ -13,6 +13,7 @@ export const UI_STRINGS = {
   reportLink: 'open Report in BlazeMeter',
   reportWord: 'Report',
   generated: 'generated',
+  importedFrom: 'imported from',
   labData: 'lab data',
 
   // Engines list

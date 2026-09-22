@@ -77,6 +77,29 @@ BlazeMeter account, and the file works offline forever.
 > (this repo's `.gitignore` already covers it). A leaked key is a live
 > credential to your BlazeMeter account.
 
+### No network? Import the artifacts from disk
+
+When the API is not reachable, download each Engine's `artifacts.zip` from the
+report's **Logs** tab, and point the dashboard at the zip, its unzipped folder,
+or a folder that holds several of them:
+
+```bash
+node bzm-vitals-dashboard.mjs --artifacts ./artifacts.zip --out report.html
+node bzm-vitals-dashboard.mjs --artifacts ./downloads/ --master <masterId> --out report.html
+```
+
+`--artifacts` makes no network calls and needs no API key. `--master` is
+optional; it only names the Report and adds the link back to BlazeMeter.
+Each zip, each folder named `r-v4-…`, and each folder that holds a `bzt.log`
+is read as a separate Engine.
+
+For a fully offline machine, use the single-file
+[`bzm-vitals-dashboard.mjs`](#no-npm-access-single-file-builds) with `node`, as
+above. Do not rely on `npx`: when the package is not installed, `npx` contacts
+the npm registry, and with `--offline` it can run an old cached version.
+`npx bzm-vitals-dashboard --artifacts …` is offline only where the package is
+already installed.
+
 ## Reading the report
 
 - **The Route table** answers *"what is the state?"* — one row per page
@@ -115,7 +138,7 @@ BlazeMeter account, and the file works offline forever.
 
 ## No npm access? Single-file builds
 
-Both pieces also ship as single generated `.ts` files, attached to every
+Both pieces also ship as single generated files, attached to every
 [GitHub release](../../releases/latest) — for Engines with no registry access
 and for machines where `npm install` isn't an option:
 
@@ -123,11 +146,15 @@ and for machines where `npm install` isn't an option:
   change the import to the sibling file —
   `import { test, expect } from './bzm-playwright-vitals';`. Playwright's own
   TS loader transpiles it on the Engine; the registry is never contacted.
-- **`bzm-vitals-dashboard.ts`** (dashboard): download it anywhere and run
-  `npx tsx bzm-vitals-dashboard.ts --master <masterId> --out report.html` —
-  or, zero-install on Node ≥ 23.6,
-  `node bzm-vitals-dashboard.ts --master <masterId> --out report.html`.
-  It imports node builtins only.
+- **`bzm-vitals-dashboard.mjs`** (dashboard): plain JavaScript. Download it
+  anywhere and run
+  `node bzm-vitals-dashboard.mjs --artifacts <zip-or-folder> --out report.html`
+  (offline) or `node bzm-vitals-dashboard.mjs --master <masterId> --out report.html`
+  (API). It runs on Node 20 or later with no flags, no `npm install` and no
+  `tsx`, and it imports Node built-in modules only.
+- **`bzm-vitals-dashboard.ts`** (dashboard): the same code as TypeScript, for
+  `npx tsx bzm-vitals-dashboard.ts …` or, on Node ≥ 23.6,
+  `node bzm-vitals-dashboard.ts …`.
 
 Both are build artifacts generated from the real package sources
 (`npm run build:standalone` in [`packages/collector`](packages/collector) and
