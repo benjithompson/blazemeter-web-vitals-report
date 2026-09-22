@@ -133,6 +133,45 @@ Both are build artifacts generated from the real package sources
 standalone seam test — never a second source of truth. The
 [`examples/`](examples) walkthrough covers both variants.
 
+## Behind a corporate proxy?
+
+Many company networks inspect HTTPS traffic. The proxy re-signs each
+connection with a company root certificate, and Node does not trust that
+certificate. The symptom is `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` (or
+`SELF_SIGNED_CERT_IN_CHAIN`) from `npm install`, from `npx`, or from the
+dashboard when it calls the BlazeMeter API.
+
+Fix it at the Node level. npm's `cafile` setting fixes npm only — the
+dashboard uses Node's built-in `fetch`, which ignores it.
+
+**Option 1 — use the operating system's certificates** (Node 22.15+ or
+23.8+). The company root is usually already in the system store:
+
+```powershell
+# PowerShell (Windows)
+$env:NODE_OPTIONS = "--use-system-ca"
+```
+
+```bash
+# bash / zsh (macOS, Linux)
+export NODE_OPTIONS=--use-system-ca
+```
+
+**Option 2 — point Node at the root certificate file.** Ask IT for the
+proxy's root certificate, or export it (Windows: `certmgr.msc` → *Trusted Root
+Certification Authorities* → export as *Base-64 encoded X.509*). Then:
+
+```powershell
+setx NODE_EXTRA_CA_CERTS C:\certs\corp-root.cer   # open a new terminal after this
+npm config set cafile C:\certs\corp-root.cer
+```
+
+Do not set `strict-ssl false`: it turns off certificate checks for npm, and
+it does not fix the dashboard.
+
+`npx tsx …` downloads `tsx` from the registry when it is not installed yet.
+Run `npm install` in the repo first, after the fix above.
+
 ---
 
 *On npm:
