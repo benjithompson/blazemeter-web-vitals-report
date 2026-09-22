@@ -5,7 +5,7 @@ import { test, expect } from 'bzm-playwright-vitals';
 
 test('Declared Routes', async ({ page, vitals }) => {
   // route() after goto tags the Navigation the page is currently on — including an
-  // INTERMEDIATE one: Navigation 1 flushes at the next goto's pagehide, after the
+  // INTERMEDIATE one: Navigation 1 flushes as the next goto leaves it, after the
   // declaration below has already been consumed-into-pending.
   await page.goto('/');
   await expect(page.locator('h1')).toHaveText('Home');

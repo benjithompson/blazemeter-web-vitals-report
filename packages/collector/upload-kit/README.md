@@ -64,19 +64,18 @@ engines; repeat-each = workers × iterations). With 2 tests in the spec:
   Navigation-2 and `Single Page` Samples carry
   `inp: {value: null, status: "no-interaction"}` — never 0, never absent.
 
-## Why the journey stays on one site (measured limitations)
+## Why the journey is shaped this way (measured)
 
-Both were found while validating this kit locally, with the collector behaving
-identically via the package and the standalone file:
+Found while validating this kit locally, with the collector behaving identically via
+the package and the standalone file:
 
-- **Cross-site navigation loses the departing document's Sample.** Navigating
-  example.com → iana.org swaps the Chromium renderer process, and the `exposeBinding`
-  call the trap makes at `pagehide` never reaches Node (reproduced with an 8-line probe
-  using nothing but `exposeBinding` + `addInitScript` — a platform behavior, not a
-  collector bug). Worse, a `vitals.route()` declared for the lost Navigation is then
-  consumed by the NEXT document's Sample. Same-site document navigations flush
-  reliably. Until the collector grows a cross-site story, keep each test's journey on
-  one site.
+- **Cross-site navigation used to lose the departing document's Sample.** Navigating
+  example.com → iana.org swaps the Chromium renderer process, and an `exposeBinding`
+  call made at `pagehide` never reaches Node (a platform behavior). From Playwright
+  1.63, Chromium's RenderDocument swaps the frame on EVERY navigation, same-site
+  included. The collector now flushes before a test-driven `goto()` /
+  `reload()` / `goBack()` / `goForward()`, and at `beforeunload` for link clicks, so
+  cross-site journeys keep both Samples (pinned in `test/crosssite.test.ts`).
 - **SPA link clicks are not Navigations.** playwright.dev (Docusaurus) intercepts
   internal links client-side: no document unload, no new document, so by design no
   second Sample — the whole journey lands in one Sample flushed at teardown. Use

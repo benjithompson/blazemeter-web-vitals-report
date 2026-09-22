@@ -8,11 +8,9 @@
 // way it transpiles the spec itself. Nothing else here is collector-aware.
 //
 // WHY THIS JOURNEY IS SHAPED THE WAY IT IS (measured, not guessed — see README):
-//   * Both Navigations stay on ONE site. A cross-SITE navigation (e.g. example.com ->
-//     iana.org) swaps the Chromium renderer process, and the departing document's
-//     pagehide flush is LOST — its Sample never lands (reproduced with an 8-line
-//     exposeBinding probe; it is a platform behavior, not a collector bug). Same-site
-//     document navigations flush reliably.
+//   * Both Navigations stay on ONE site — simply a small, stable journey. (Cross-site
+//     navigations are recorded too: the collector flushes the departing document
+//     before goto() and at beforeunload, not at pagehide — see README.)
 //   * The site is server-rendered (real document Navigations). An SPA like
 //     playwright.dev intercepts link clicks client-side — no document Navigation, so
 //     by design no second Sample.
