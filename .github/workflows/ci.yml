@@ -1,0 +1,62 @@
+# CI: typecheck, the full test suite on Chromium AND Firefox, and both standalone builds.
+#
+# CI=true is set by GitHub Actions. Under it, a Firefox case whose browser is missing
+# FAILS with "Firefox not installed: run npx playwright install firefox" instead of
+# skipping (packages/collector/test/helpers/browsers.ts), so CI can never go green
+# while silently skipping a browser.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the pinned baseline; 24 is the next LTS, tested so it can't break silently.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          # Caches ~/.npm, keyed on package-lock.json.
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # Browser binaries are cached on the lockfile (which pins the Playwright version);
+      # the install step still runs every time so --with-deps installs the OS libraries,
+      # and on a cache hit it skips the download.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright browsers (Chromium + Firefox)
+        run: npx playwright install --with-deps chromium firefox
+
+      - run: npm test
+
+      - name: Standalone build (collector)
+        run: npm run build:standalone --workspace packages/collector
+
+      - name: Standalone build (dashboard)
+        run: npm run build:standalone --workspace packages/dashboard
