@@ -30,6 +30,7 @@ export const UI_STRINGS = {
   samplesColumn: 'Samples',
   thresholdNote: 'threshold dots: web.dev Core Web Vitals bands, applied to p75 only',
   coverageNote: 'Coverage under every value: measured Samples of the pool',
+  percentileNote: 'percentiles: lower method (NumPy method="lower"), always an observed value',
   noSamples: 'no samples — this Report carried no vitals records',
   coldStartsSuffix: 'Cold Starts',
   coldStartFlag: 'Cold Start',
