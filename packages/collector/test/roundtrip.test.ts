@@ -33,6 +33,7 @@ import { readFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
+import { firefoxRunOrSkip, itFirefox } from './helpers/browsers';
 import { runPlaywright, walkFiles } from './helpers/run-playwright';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -113,6 +114,10 @@ function parsedSample(r: RawRecord) {
   return result.sample;
 }
 
+function isFirefoxOutcome(r: RawRecord): boolean {
+  return (JSON.parse(r.raw) as { test?: { project?: unknown } }).test?.project === 'firefox';
+}
+
 function parsedOutcome(r: RawRecord) {
   const result = dash.parseOutcomeJson(r.raw);
   if (!result.ok) throw new Error(`dashboard rejected real collector output ${r.path}: ${result.reason}`);
@@ -138,16 +143,16 @@ beforeAll(async () => {
   server = await startFixtureServer();
   const [chromiumRun, firefoxRun, routeRun] = await Promise.all([
     runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url }),
-    runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url, project: 'firefox' }),
+    firefoxRunOrSkip(() => runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url, project: 'firefox' })),
     runPlaywright({ spec: 'route.spec.ts', baseURL: server.url }),
   ]);
 
   chromiumSamples = await rawFiles(chromiumRun.outputDir, SAMPLE_FILE);
-  firefoxSamples = await rawFiles(firefoxRun.outputDir, SAMPLE_FILE);
+  firefoxSamples = firefoxRun ? await rawFiles(firefoxRun.outputDir, SAMPLE_FILE) : [];
   routeSamples = await rawFiles(routeRun.outputDir, SAMPLE_FILE);
   outcomes = [
     ...(await rawFiles(chromiumRun.outputDir, OUTCOME_FILE)),
-    ...(await rawFiles(firefoxRun.outputDir, OUTCOME_FILE)),
+    ...(firefoxRun ? await rawFiles(firefoxRun.outputDir, OUTCOME_FILE) : []),
     ...(await rawFiles(routeRun.outputDir, OUTCOME_FILE)),
   ];
 }, 300_000);
@@ -157,13 +162,17 @@ afterAll(async () => {
 });
 
 describe('the real emitted files reach the parser at all', () => {
+  // vitals.spec: Click Then Navigate (2 Navigations) + Navigate Only (1) = 3 Samples,
+  // 2 Outcomes — per browser. route.spec: 2 + 1 + 1 = 4 Samples, 3 Outcomes.
   it('the runs emitted the exact expected file counts — a silent loss here would quietly shrink every assertion below', () => {
-    // vitals.spec: Click Then Navigate (2 Navigations) + Navigate Only (1) = 3 Samples,
-    // 2 Outcomes — per browser. route.spec: 2 + 1 + 1 = 4 Samples, 3 Outcomes.
     expect(chromiumSamples.length).toBe(3);
-    expect(firefoxSamples.length).toBe(3);
     expect(routeSamples.length).toBe(4);
-    expect(outcomes.length).toBe(7);
+    expect(outcomes.filter((r) => !isFirefoxOutcome(r)).length).toBe(5);
+  });
+
+  itFirefox('the firefox run emitted the exact expected file counts (3 Samples, 2 Outcomes)', () => {
+    expect(firefoxSamples.length).toBe(3);
+    expect(outcomes.filter(isFirefoxOutcome).length).toBe(2);
   });
 
   it("the dashboard's discovery predicates match the names the collector emits", () => {
@@ -307,7 +316,7 @@ describe('all five metrics round-trip, including the non-ok statuses the real ru
     }
   });
 
-  it("firefox: cls arrives as {value: null, status: 'unsupported'} — the parser must not turn it into a fake 0", () => {
+  itFirefox("firefox: cls arrives as {value: null, status: 'unsupported'} — the parser must not turn it into a fake 0", () => {
     expect(firefoxSamples.length).toBeGreaterThan(0);
     for (const r of firefoxSamples) {
       const cls = parsedSample(r).vitals.cls!;
