@@ -77,6 +77,14 @@ Likewise, non-Chromium projects still emit Samples: CLS arrives as
 - **One Sample per Navigation** (~450 bytes): the five vitals with statuses,
   `domContentLoaded`/`load` timings, the URL as navigated, your declared
   Route if any, and test identity (file, title, project, repeat, worker).
+  Each Sample also carries a `context` block:
+
+  | field | what it counts |
+  |---|---|
+  | `workers` | the Playwright worker count of the run |
+  | `resourceCount` | the document's own resource-timing entries (what the page fetched, as the browser's Resource Timing API reports it) |
+  | `requestCount` | requests made during **this Navigation's document only**: its own document request (and redirects), plus every request the page made while it was current, subframes included. It starts again at the next document. |
+  | `failedRequests` | requests on the page that failed (network error, abort) |
 - **One Outcome per test execution**: `passed | failed | timedOut | skipped`
   plus retry. A *missing* Outcome means the execution crashed before
   finishing — the dashboard reads that absence as a signal.
