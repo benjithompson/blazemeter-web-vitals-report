@@ -25,6 +25,7 @@ import {
 } from './helpers/blazemeter-server';
 import { runPlaywright, findSamples, findOutcomes, anyFileContains, type RunResult } from './helpers/run-playwright';
 import type { Interval } from '../src/blazemeter-destination';
+import { firefoxRunOrSkip, itFirefox } from './helpers/browsers';
 
 const KEY_ID = 'seam-a-key-id';
 const KEY_SECRET = 'seam-a-key-secret';
@@ -64,13 +65,18 @@ let bzmNoCreds: BlazeMeterServer;
 let bzmError: BlazeMeterServer;
 
 let pushRun: RunResult;
-let firefoxRun: RunResult;
+let firefoxRun: RunResult | undefined; // undefined when Firefox is not installed
 let hostileRun: RunResult;
 let overrideRun: RunResult;
 let noCredsRun: RunResult;
 let errorRun: RunResult;
 
 let pushSamples: Sample[];
+
+/** Every child run that actually ran (the Firefox run is absent when Firefox is not installed). */
+function allRuns(): RunResult[] {
+  return [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun].filter((r): r is RunResult => r !== undefined);
+}
 
 beforeAll(async () => {
   pageServer = await startFixtureServer();
@@ -91,12 +97,14 @@ beforeAll(async () => {
       baseURL: pageServer.url,
       env: { ...PUSH_BASE, SESSION_ID: 'r-v4-push', BLAZEMETER_API_BASE: bzmPush.url },
     }),
-    runPlaywright({
-      spec: 'vitals.spec.ts',
-      baseURL: pageServer.url,
-      project: 'firefox',
-      env: { ...PUSH_BASE, SESSION_ID: 'r-v4-firefox', BLAZEMETER_API_BASE: bzmFirefox.url },
-    }),
+    firefoxRunOrSkip(() =>
+      runPlaywright({
+        spec: 'vitals.spec.ts',
+        baseURL: pageServer.url,
+        project: 'firefox',
+        env: { ...PUSH_BASE, SESSION_ID: 'r-v4-firefox', BLAZEMETER_API_BASE: bzmFirefox.url },
+      }),
+    ),
     runPlaywright({
       spec: 'hostile.spec.ts',
       baseURL: pageServer.url,
@@ -141,7 +149,7 @@ afterAll(async () => {
 
 describe('the happy path: importing the collector + api-key env + a resolvable master pushes live', () => {
   it('every child run exited 0 — the push never fails the test', () => {
-    for (const r of [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun]) {
+    for (const r of allRuns()) {
       expect(r.exitCode, r.stderr).toBe(0);
     }
   });
@@ -221,7 +229,7 @@ describe('BLAZEMETER_MASTER_ID overrides resolution', () => {
 });
 
 describe('only status:ok metrics produce an interval — verified on the real non-ok fixtures', () => {
-  it('firefox: CLS is UNSUPPORTED → no CLS interval; TTFB/FCP still push', () => {
+  itFirefox('firefox: CLS is UNSUPPORTED → no CLS interval; TTFB/FCP still push', () => {
     const leaves = new Set(intervalsOf(bzmFirefox).map((iv) => leafOf(iv._id.metricPath)));
     // No LayoutShift API on Firefox → cls 'unsupported' → never an interval, never a fake 0.
     expect(leaves.has('CLS×1000')).toBe(false);
@@ -283,7 +291,7 @@ describe('best-effort: a broken injection endpoint never fails the run or drops 
 
 describe('the credential-leak invariant', () => {
   it('the api-key id and secret appear in NO on-disk artifact of any run', async () => {
-    for (const r of [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun]) {
+    for (const r of allRuns()) {
       expect(await anyFileContains(r.outputDir, KEY_ID), `${KEY_ID} on disk in ${r.outputDir}`).toBe(false);
       expect(await anyFileContains(r.outputDir, KEY_SECRET), `${KEY_SECRET} on disk in ${r.outputDir}`).toBe(false);
     }
