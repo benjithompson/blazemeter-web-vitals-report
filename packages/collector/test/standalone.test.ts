@@ -8,10 +8,11 @@
 // into the fixtures dir, so a stale artifact can never be what gets tested.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { copyFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SCHEMA_VERSION } from 'bzm-vitals-format';
-import { buildStandalone } from '../scripts/build-standalone';
+import { buildStandalone, bundle } from '../scripts/build-standalone';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import {
   FIXTURES_DIR,
@@ -27,11 +28,14 @@ const VITAL_NAMES = ['ttfb', 'fcp', 'lcp', 'cls', 'inp'] as const;
 let server: FixtureServer;
 let samples: FoundSample[];
 let outcomes: FoundOutcome[];
+let source: string;
 
 beforeAll(async () => {
   // Regenerate the artifact from src/index.ts, then place it NEXT TO the spec — the
   // upload-kit layout. Staleness is impossible: what runs is what the script just built.
-  const { outFile } = await buildStandalone();
+  const build = await buildStandalone();
+  const outFile = build.outFile;
+  source = build.source;
   await copyFile(outFile, join(FIXTURES_DIR, 'bzm-playwright-vitals.ts'));
 
   server = await startFixtureServer();
@@ -113,8 +117,7 @@ describe('the standalone file behaves as the package does under a relative TS im
     }
   });
 
-  it('the generated file declares itself: header, generator, no workspace import', async () => {
-    const { source } = await buildStandalone();
+  it('the generated file declares itself: header, generator, no workspace import', () => {
     expect(source).toContain('DO NOT HAND-EDIT');
     expect(source).toContain('scripts/build-standalone.ts');
     expect(source).toContain('adopt via npm when published');
@@ -122,7 +125,29 @@ describe('the standalone file behaves as the package does under a relative TS im
     expect(source).not.toMatch(/(?:from\s+|require\()\s*['"]bzm-vitals-format['"]/);
     // No .js-extension self-imports and no top-level await — the things Playwright's
     // Engine-side TS loader chokes on.
-    expect(source).not.toMatch(/from\s+'\.[^']*\.js'/);
+    expect(source).not.toMatch(/^(?:import|export)\s[^;]*?from\s+['"]\./m);
     expect(source).not.toMatch(/^await\s/m);
+    // Playwright's loader sees plain JS; tsc in an editor must not flag the bundle.
+    expect(source.startsWith('// @ts-nocheck\n')).toBe(true);
+  });
+
+  it('the only imports left in the bundle are node:* builtins and @playwright/test', () => {
+    const specifiers = [...source.matchAll(/^import\s[^;]*?from\s+["']([^"']+)["'];/gm)].map((m) => m[1]!);
+    expect(specifiers).toContain('@playwright/test');
+    for (const spec of specifiers) expect(spec).toMatch(/^(?:node:|@playwright\/test$)/);
+  });
+
+  it('the build FAILS when the bundle would import anything else (esbuild metafile guard)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bzm-guard-'));
+    try {
+      const entry = join(dir, 'entry.ts');
+      // An unprefixed builtin stays external under platform 'node', so it reaches the guard.
+      await writeFile(entry, "import { readFileSync } from 'fs';\nexport const read = readFileSync;\n");
+      await expect(bundle(entry)).rejects.toThrow(/imports fs; only node:\* and @playwright\/test/);
+      await writeFile(entry, "import { readFileSync } from 'node:fs';\nexport const read = readFileSync;\n");
+      await expect(bundle(entry)).resolves.toContain('node:fs');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

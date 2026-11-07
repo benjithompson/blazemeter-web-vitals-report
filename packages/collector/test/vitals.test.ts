@@ -10,6 +10,8 @@
 //              is the named defect this issue exists to kill.
 //   hostile  — hostile.spec.ts on chromium: the page shadows a flush-time read with a
 //              thrower. A throw costs that metric ('error'), never the Sample.
+//   fast     — fast-click.spec.ts on chromium: a real click on a handler that does no
+//              work. It is an interaction — INP 'ok', never 'no-interaction' (C2).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Metric } from 'bzm-vitals-format';
@@ -26,10 +28,11 @@ let server: FixtureServer;
 let normal: FoundSample[];
 let firefox: FoundSample[];
 let hostile: FoundSample[];
+let fast: FoundSample[];
 
 /** Every Sample from every run — for the vocabulary-wide assertions. */
 function allSamples(): FoundSample[] {
-  return [...normal, ...firefox, ...hostile];
+  return [...normal, ...firefox, ...hostile, ...fast];
 }
 
 function vital(s: FoundSample, name: string): Metric {
@@ -46,14 +49,16 @@ function forTitle(samples: FoundSample[], title: string): FoundSample[] {
 
 beforeAll(async () => {
   server = await startFixtureServer();
-  const [normalRun, firefoxRun, hostileRun] = await Promise.all([
+  const [normalRun, firefoxRun, hostileRun, fastRun] = await Promise.all([
     runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url }),
     firefoxRunOrSkip(() => runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url, project: 'firefox' })),
     runPlaywright({ spec: 'hostile.spec.ts', baseURL: server.url }),
+    runPlaywright({ spec: 'fast-click.spec.ts', baseURL: server.url }),
   ]);
   normal = await findSamples(normalRun.outputDir);
   firefox = firefoxRun ? await findSamples(firefoxRun.outputDir) : [];
   hostile = await findSamples(hostileRun.outputDir);
+  fast = await findSamples(fastRun.outputDir);
 }, 300_000);
 
 afterAll(async () => {
@@ -153,6 +158,24 @@ describe('the normal journey on chromium', () => {
       expect(inp.status, s.path).toBe('no-interaction');
       expect(inp.value, s.path).toBeNull();
     }
+  });
+
+  it("a fast click (a handler that does no work) reports inp ok, not 'no-interaction'", () => {
+    // Under event-timing's 16ms durationThreshold the click has no 'event' entry; the
+    // first-input entry is what records it. 'no-interaction' here would claim nothing
+    // was clicked. Three Navigations, one fast click each (see fast-click.spec.ts).
+    const clicked = forTitle(fast, 'Fast Click');
+    expect(clicked.length).toBe(3);
+    for (const s of clicked) {
+      const inp = vital(s, 'inp');
+      expect(inp, s.path).toEqual({ value: expect.any(Number), status: 'ok' });
+      expect(inp.value, s.path).toBeGreaterThanOrEqual(0);
+    }
+    // It measured the FAST click: under 50ms. Judged on the median of the three, because
+    // a starved renderer on a contended CPU can stretch one no-op click to 80ms
+    // (measured: 1 of 48 under six parallel Playwright runs on 4 CPUs).
+    const values = clicked.map((s) => vital(s, 'inp').value!).sort((a, b) => a - b);
+    expect(values[1], `inp values ${values.join(', ')}`).toBeLessThan(50);
   });
 
   it('CLS survives page close — the teardown flush ran BEFORE the close that flushes nothing', () => {

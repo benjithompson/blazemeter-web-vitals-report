@@ -17,7 +17,13 @@ import path from 'node:path';
 import { runCli } from '../src/cli.js';
 import { defaultCacheRoot } from '../src/cache.js';
 import { parseBlob } from './helpers/blob.js';
-import type { ReportData } from '../src/report.js';
+import {
+  assembleReportData,
+  type EngineRecords,
+  type RecordFile,
+  type ReportData,
+} from '../src/report.js';
+import { buildReportVariants } from '../src/view-model.js';
 
 const DEMO_MASTER = '82723459';
 const cacheRoot = defaultCacheRoot();
@@ -147,4 +153,77 @@ describe.skipIf(!cachePresent)('report-scale: the real demo Report through the C
     expect(html).not.toMatch(/<link[^>]+\bhref\s*=\s*["']?https?:/i);
     expect(html).not.toMatch(/<img[^>]+\bsrc\s*=\s*["']?https?:/i);
   });
+});
+
+// ------------------------------------------------------------ 200k Samples
+//
+// Issue #33 (D4): at 200k Samples `Math.min(...values)` in the view model
+// spread every measured value onto the call stack and threw
+// `RangeError: Maximum call stack size exceeded`. Unlike the block above,
+// this one NEVER skips: it builds its Samples synthetically (one cheap
+// template with a varying ts, Route and LCP) and drives the same two calls
+// the CLI makes — assembleReportData, then buildReportVariants. @slow, but it
+// runs in CI and stays well under its 15 s budget.
+
+const SCALE_SAMPLES = 200_000;
+const SCALE_ROUTES = 4;
+
+function syntheticEngine(sessionId: string, count: number, offset: number): EngineRecords {
+  const files: RecordFile[] = [];
+  for (let i = 0; i < count; i++) {
+    const n = offset + i;
+    files.push({
+      file: `${sessionId}/bzm-vitals-sample-${n}.json`,
+      read: async () =>
+        JSON.stringify({
+          schemaVersion: 1,
+          ts: 1752700000000 + n,
+          url: `https://example.com/p${n % SCALE_ROUTES}`,
+          test: { file: 'scale.spec.ts', title: 'scale', project: 'chromium', repeat: n, worker: n % 8 },
+          navigationIndex: 0,
+          vitals: {
+            lcp: { value: 1000 + (n % 5000), status: 'ok' },
+            cls: { value: (n % 100) / 1000, status: 'ok' },
+          },
+          navigation: { domContentLoadedMs: null, loadEventMs: null },
+          context: { workers: null, resourceCount: null, requestCount: null, failedRequests: null },
+        }),
+    });
+  }
+  return { sessionId, locationId: 'us-west-1', status: 'ENDED', artifact: 'present', files };
+}
+
+describe('report-scale @slow: 200k synthetic Samples (issue #33)', () => {
+  it(
+    'assembleReportData + buildReportVariants complete without a call-stack RangeError',
+    async () => {
+      const half = SCALE_SAMPLES / 2;
+      const data = await assembleReportData({
+        masterId: '90000033',
+        reportName: null,
+        engines: [
+          syntheticEngine('r-v4-scale-a', half, 0),
+          syntheticEngine('r-v4-scale-b', half, half),
+        ],
+      });
+      expect(data.samples).toHaveLength(SCALE_SAMPLES);
+
+      const { included } = buildReportVariants(data);
+      expect(included.totalSamples).toBe(SCALE_SAMPLES);
+      expect(included.routes).toHaveLength(SCALE_ROUTES);
+      for (const route of included.routes) {
+        expect(route.sampleCount).toBe(SCALE_SAMPLES / SCALE_ROUTES);
+        const lcp = route.histograms.find((h) => h.metric === 'lcp')!;
+        expect(lcp.okCount).toBe(SCALE_SAMPLES / SCALE_ROUTES);
+        // Route /pK holds n ≡ K (mod 4); 5000 is a multiple of 4, so its LCP
+        // values are exactly 1000+K, 1004+K, …, 5996+K.
+        const k = Number(route.route.slice('/p'.length));
+        expect(lcp.min).toBe(1000 + k);
+        expect(lcp.max).toBe(5996 + k);
+        expect(lcp.bins.reduce((n, b) => n + b.count, 0)).toBe(lcp.okCount);
+        expect(lcp.maxBinCount).toBe(lcp.bins.reduce((m, b) => (b.count > m ? b.count : m), 0));
+      }
+    },
+    15_000,
+  );
 });

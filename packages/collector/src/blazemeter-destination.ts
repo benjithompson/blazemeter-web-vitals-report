@@ -13,7 +13,15 @@
 // a log line, or any on-disk artifact).
 
 import type { Sample, Metric } from 'bzm-vitals-format';
-import type { Destination } from './pusher.js';
+import {
+  PushError,
+  isRetryableStatus,
+  parseRetryAfter,
+  realClock,
+  sendWithRetry,
+  type Clock,
+  type Destination,
+} from './pusher.js';
 // Route derivation and the identity/kill-switch env readers live in the shared cross-sink
 // module now (both sinks resolve identity from one source). Imported, not re-exported:
 // importers take them from the shared module directly, which keeps the single-file
@@ -138,6 +146,8 @@ interface FetchResponse {
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
+  /** Read for Retry-After only; optional so a minimal test double can omit it. */
+  headers?: { get(name: string): string | null };
 }
 
 /** The injectable transport. The default wraps the global fetch; tests pass a double. */
@@ -157,6 +167,10 @@ export interface BlazeMeterDeps {
   fetch?: FetchLike;
   /** Per-request timeout override (tests). */
   timeoutMs?: number;
+  /** Clock for request timeouts and retry backoff (tests inject a manual one). */
+  clock?: Clock;
+  /** Jitter source in [0, 1) for retry backoff (tests pin it). */
+  random?: () => number;
 }
 
 /** Basic api_key_id:api_key_secret — the ONLY place the credential is ever materialised. */
@@ -193,8 +207,12 @@ export class BlazeMeterDestination implements Destination {
   private readonly masterIdOverride: number | null;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
+  private readonly clock: Clock;
+  private readonly random: (() => number) | undefined;
 
   private masterId: number | null = null;
+  /** Why init() came up dead — status + path, never a credential. Read by the pusher. */
+  initFailure: string | null = null;
 
   constructor(deps: BlazeMeterDeps = {}) {
     const env = deps.env ?? process.env;
@@ -212,6 +230,8 @@ export class BlazeMeterDestination implements Destination {
     this.masterIdOverride = coerceMasterId(env.BLAZEMETER_MASTER_ID);
     this.fetchImpl = deps.fetch ?? ((url, init) => fetch(url, init) as unknown as Promise<FetchResponse>);
     this.timeoutMs = deps.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    this.clock = deps.clock ?? realClock;
+    this.random = deps.random;
   }
 
   isEnabled(): boolean {
@@ -231,15 +251,17 @@ export class BlazeMeterDestination implements Destination {
       this.masterId = this.masterIdOverride;
     } else {
       if (this.sessionId === undefined || this.creds === null) return false;
+      const path = `/api/v4/sessions/${this.sessionId}`;
       try {
-        const res = await this.request('GET', `/api/v4/sessions/${this.sessionId}`);
-        if (!res.ok) return false;
+        const res = await this.request('GET', path);
+        if (!res.ok) return this.dead(`${res.status} on GET ${path}${authHint(res.status)}; push off for this worker`);
         const body = (await res.json()) as { result?: { masterId?: unknown } };
         const resolved = coerceMasterId(body?.result?.masterId);
-        if (resolved === null) return false;
+        if (resolved === null) return this.dead(`GET ${path} returned no usable masterId; push off for this worker`);
         this.masterId = resolved;
-      } catch {
-        return false; // network/timeout — the pusher isolates; nothing is retried
+      } catch (err) {
+        // network/timeout — the pusher isolates it; resolution is not retried
+        return this.dead(`${errMessage(err)}; push off for this worker`);
       }
     }
     await this.upgradeLocationFromStatus();
@@ -268,8 +290,14 @@ export class BlazeMeterDestination implements Destination {
     }
   }
 
-  /** POST the batch's ok vitals as injection intervals. No-op when nothing is pushable. */
-  async send(batch: Sample[]): Promise<void> {
+  private dead(reason: string): false {
+    this.initFailure = reason;
+    return false;
+  }
+
+  /** POST the batch's ok vitals as injection intervals, retrying transient failures (429,
+   *  5xx, timeouts, network errors) with backoff. No-op when nothing is pushable. */
+  async send(batch: Sample[], signal?: AbortSignal): Promise<void> {
     if (this.masterId === null || this.creds === null) return;
     const body = buildInjectionBody(batch, {
       masterId: this.masterId,
@@ -278,32 +306,75 @@ export class BlazeMeterDestination implements Destination {
       profileName: this.profileName,
     });
     if (body.intervals.length === 0) return; // never POST an empty payload
-    await this.request('POST', '/api/v4/data/timeseries', body);
+    await sendWithRetry(() => this.request('POST', '/api/v4/data/timeseries', body, signal).then(() => {}), {
+      clock: this.clock,
+      signal,
+      random: this.random,
+    });
   }
 
   async close(): Promise<void> {
     // The pusher owns the drain; the BlazeMeter sink holds no per-worker resource to free.
   }
 
-  /** One authenticated, timeout-bounded request. Throws on transport failure or non-ok
-   *  POST (the pusher swallows it); the credential appears ONLY in the Authorization header. */
-  private async request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<FetchResponse> {
+  /**
+   * One authenticated, timeout-bounded request. Throws a PushError on transport failure,
+   * timeout or a non-ok POST, classified for retry (the pusher isolates it); its message is
+   * status + method + path only. The credential appears ONLY in the Authorization header.
+   * `outer` (the drain deadline) aborts the request early, like the per-request timeout.
+   */
+  private async request(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+    outer?: AbortSignal,
+  ): Promise<FetchResponse> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    (timer as { unref?: () => void }).unref?.();
+    let timedOut = false;
+    const timer = this.clock.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
+    const onOuterAbort = () => controller.abort();
+    if (outer?.aborted) controller.abort();
+    outer?.addEventListener('abort', onOuterAbort, { once: true });
+    let res: FetchResponse;
     try {
       const headers: Record<string, string> = { Authorization: basicAuth(this.creds!) };
       if (body !== undefined) headers['Content-Type'] = 'application/json';
-      const res = await this.fetchImpl(`${this.apiBase}${path}`, {
+      res = await this.fetchImpl(`${this.apiBase}${path}`, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
-      if (method === 'POST' && !res.ok) throw new Error(`injection POST ${path} → ${res.status}`);
-      return res;
+    } catch (err) {
+      if (timedOut) throw new PushError(`timed out after ${this.timeoutMs}ms on ${method} ${path}`, true);
+      if (outer?.aborted) throw new PushError(`aborted at the drain deadline on ${method} ${path}`, false);
+      throw new PushError(`network error on ${method} ${path}: ${errMessage(err)}`, true);
     } finally {
-      clearTimeout(timer);
+      timer.clear();
+      outer?.removeEventListener('abort', onOuterAbort);
     }
+    if (method === 'POST' && !res.ok) {
+      throw new PushError(
+        `${res.status} on ${method} ${path}${authHint(res.status)}`,
+        isRetryableStatus(res.status),
+        parseRetryAfter(res.headers?.get('retry-after')),
+      );
+    }
+    return res;
   }
+}
+
+/** A pointer at the credential VARIABLES (never their values) for an auth failure. */
+function authHint(status: number): string {
+  return status === 401 || status === 403 ? ' (check the BlazeMeter api-key id/secret)' : '';
+}
+
+/** A transport error's message, with its cause code (ECONNREFUSED…) when fetch wraps one. */
+function errMessage(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const code = (err as { cause?: { code?: unknown } }).cause?.code;
+  return typeof code === 'string' ? `${err.message} (${code})` : err.message;
 }

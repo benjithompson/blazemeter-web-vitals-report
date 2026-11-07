@@ -35,9 +35,11 @@ import type { AttributedOutcome, AttributedSample, SampleExecutionStatus } from 
 import type { DashboardSample } from './parse.js';
 
 /**
- * The pinned percentile method: sorted ascending, take sorted[floor((n-1)*q)].
- * Verified against the known-answer fixture — nearest-rank and linear
- * interpolation both fail to reproduce the real Report's values.
+ * The pinned percentile method: sorted ascending, take sorted[floor((n-1)*q)] —
+ * NumPy's method='lower'. It always returns an observed value, and it reads low
+ * at small n (n=10 → "p95" is the second-highest value); coverage beside every
+ * aggregate makes small n visible. Nearest-rank and linear interpolation both
+ * fail to reproduce the known-answer fixture's values. Decision: SPEC-HARDENING.md D7.
  */
 export function percentile(values: number[], q: number): number {
   if (values.length === 0) {

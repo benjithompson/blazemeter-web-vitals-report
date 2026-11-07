@@ -43,7 +43,7 @@ import {
   type ExecutionOutcome,
   type ExecutionStatus,
 } from 'bzm-vitals-format';
-import { Pusher, resolveFlushMs } from './pusher.js';
+import { Pusher, resolveFlushMs, PUSH_STATUS_ATTACHMENT_PREFIX } from './pusher.js';
 import { createDestinationsFromEnv } from './destinations.js';
 
 /** The binding the in-page trap calls to hand a raw reading back to Node. */
@@ -92,8 +92,18 @@ interface RawReading {
 interface CollectorState {
   /** navigationIndex is 1-based and increments per Navigation within an Execution. */
   nextNavigationIndex: number;
-  /** Requests seen on this page (cumulative — "from the page"). */
+  /**
+   * Requests the CURRENT document has made: its own document request, then everything it
+   * fetched (subframes included). Reset when the next document commits — see
+   * countRequestsPerDocument.
+   */
   requestCount: number;
+  /**
+   * Main-frame document requests (and their redirects) for a document that has not
+   * committed yet. They belong to the NEXT document, so they wait here instead of
+   * inflating the leaving one's count.
+   */
+  incomingDocumentRequests: number;
   failedRequests: number;
   /** In-flight writes; teardown awaits these so no Sample is lost to a race. */
   pending: Promise<void>[];
@@ -211,6 +221,13 @@ function trapSource(reportBinding: string, flushHook: string): string {
     // per 50 interactions, which DEGENERATES to the worst below 50 — and a scripted
     // journey drives a handful at most, so worst-interaction is the honest choice: a
     // within-harness regression signal, never a field-comparable p75.
+    //
+    // An interaction is SEEN when any entry for it arrives: an 'event' entry (only for
+    // durations >= the 16ms durationThreshold) or the 'first-input' entry, which the
+    // browser emits for the first interaction whatever its duration. Without the
+    // latter, a journey whose clicks were all fast read as 'no-interaction' — a claim
+    // that nothing was clicked. Later fast interactions still go unobserved, which is
+    // correct: INP is the WORST interaction, and one at or over 16ms would be observed.
     var inp = { value: null, status: 'unsupported' };
     var inpObs = null;
     var interactions = {};   // interactionId -> worst duration seen
@@ -219,10 +236,14 @@ function trapSource(reportBinding: string, flushHook: string): string {
       var es = list.getEntries ? list.getEntries() : list;
       for (var i = 0; i < es.length; i++) {
         var e = es[i];
-        if (!e.interactionId) continue;    // hover/scroll noise has interactionId 0
+        // hover/scroll noise has interactionId 0. A first-input entry always counts —
+        // under its own key if this engine gave it no interactionId; max() makes a
+        // double count of the same interaction harmless.
+        var key = e.interactionId || (e.entryType === 'first-input' ? 'first-input' : 0);
+        if (!key) continue;
         if (e.startTime > lastEntryStart) lastEntryStart = e.startTime;
-        var prev = interactions[e.interactionId];
-        if (prev === undefined || e.duration > prev) interactions[e.interactionId] = e.duration;
+        var prev = interactions[key];
+        if (prev === undefined || e.duration > prev) interactions[key] = e.duration;
       }
     }
     if (supported.indexOf('event') >= 0 &&
@@ -236,12 +257,18 @@ function trapSource(reportBinding: string, flushHook: string): string {
         // interactions from before observer registration completed.
         inpObs.observe({ type: 'event', durationThreshold: 16, buffered: true });
       } catch (e) { inp.status = 'error'; inpObs = null; }
+      // Same observer, so drain()'s takeRecords() covers both types. Best-effort: an
+      // engine without first-input keeps the event-only behaviour.
+      if (inpObs !== null && supported.indexOf('first-input') >= 0) {
+        try { inpObs.observe({ type: 'first-input', buffered: true }); } catch (e) {}
+      }
     }
 
     // An interaction's event-timing entry only exists once its next frame is PRESENTED,
     // which trails the paint by a variable few ms (measured: sometimes after two rAFs).
     // A flush that can wait therefore waits for the latest input's entry — bounded,
-    // because an interaction under the 16ms threshold never gets one. The listeners are
+    // because an interaction under the 16ms threshold (other than the first input) never
+    // gets one. The listeners are
     // passive and only read a timestamp.
     var lastInputAt = -1;
     function noteInput(e) { lastInputAt = e.timeStamp; }
@@ -537,8 +564,36 @@ async function attachCollector(
   await page.addInitScript(trapSource(REPORT_BINDING, FLUSH_HOOK));
   flushBeforeNavigating(page);
 
-  page.on('request', () => { state.requestCount++; });
+  countRequestsPerDocument(page, state);
   page.on('requestfailed', () => { state.failedRequests++; });
+}
+
+/**
+ * requestCount is per document, not per page. Each request belongs to the document that
+ * was current when it was made — except a main-frame document request, which belongs to
+ * the document it fetches. The count resets when that document COMMITS (main-frame
+ * framenavigated), not when its request starts: a leaving document's first reading
+ * (beforeunload, or the flush before a test-driven goto) always reaches Node before the
+ * next document can commit, so its count is snapshotted from its own requests only. A
+ * same-document navigation (pushState, #hash) commits with no document request in
+ * flight and resets nothing.
+ */
+function countRequestsPerDocument(page: Page, state: CollectorState): void {
+  page.on('request', (request) => {
+    let isDocumentRequest = false;
+    try {
+      isDocumentRequest = request.isNavigationRequest() && request.frame() === page.mainFrame();
+    } catch {
+      // A service-worker request has no frame — it is the current document's.
+    }
+    if (isDocumentRequest) state.incomingDocumentRequests++;
+    else state.requestCount++;
+  });
+  page.on('framenavigated', (frame) => {
+    if (frame !== page.mainFrame() || state.incomingDocumentRequests === 0) return;
+    state.requestCount = state.incomingDocumentRequests;
+    state.incomingDocumentRequests = 0;
+  });
 }
 
 /**
@@ -632,6 +687,33 @@ async function writeOutcome(testInfo: TestInfo): Promise<void> {
 }
 
 /**
+ * The last test each worker's pusher served — the worker-scoped fixture has no TestInfo of
+ * its own, so the Push Status is attached through this one after the drain. Set by `page`.
+ */
+const pushStatusTarget = new WeakMap<Pusher, TestInfo>();
+
+/**
+ * Write-then-attach the worker's Push Status (per destination: sent / failed / dropped /
+ * lastError) after the teardown drain, through the same mandatory two-step as Samples. Only
+ * when a destination was enabled — the local path writes nothing. It is attached via the
+ * worker's last test, after that test has been reported, so it lands on disk (which is what
+ * the Engine collects) rather than in a reporter's listing. Best-effort: never throws.
+ */
+async function writePushStatus(pusher: Pusher, workerIndex: number): Promise<void> {
+  const status = pusher.status();
+  const testInfo = pushStatusTarget.get(pusher);
+  if (status.length === 0 || testInfo === undefined) return;
+  try {
+    const name = `${PUSH_STATUS_ATTACHMENT_PREFIX}-${workerIndex}`;
+    const outPath = testInfo.outputPath(`${name}.json`);
+    await writeFile(outPath, JSON.stringify({ worker: workerIndex, destinations: status }), 'utf8');
+    await testInfo.attach(name, { path: outPath, contentType: 'application/json' });
+  } catch (err) {
+    process.stderr.write(`[bzm-vitals] push status not written: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+/**
  * The one knob on the whole surface, and it is optional. route() declares the Route for
  * the Navigation the page is CURRENTLY on — the most recent one — or, when called before
  * any navigation, for the next one. So `await page.goto('/order/12345');
@@ -676,15 +758,20 @@ type CollectorWorkerFixtures = {
  */
 export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
   _vitalsPusher: [
-    async ({}, use) => {
+    async ({}, use, workerInfo) => {
       const pusher = new Pusher({
         destinations: createDestinationsFromEnv(),
         flushMs: resolveFlushMs(process.env),
+        // Failures are loud but never flood: the pusher emits each distinct reason once
+        // per destination.
+        onWarn: (message) => process.stderr.write(`[bzm-vitals] ${message}\n`),
       });
       pusher.start();
       await use(pusher);
-      // Worker teardown: stop the timer and drain the tail within a bounded budget.
+      // Worker teardown: stop the timer and drain the tail within a bounded budget, then
+      // record what happened to every Sample this worker pushed.
       await pusher.close();
+      await writePushStatus(pusher, workerInfo.workerIndex);
     },
     { scope: 'worker', auto: true },
   ],
@@ -693,6 +780,7 @@ export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
     const state: CollectorState = {
       nextNavigationIndex: 1,
       requestCount: 0,
+      incomingDocumentRequests: 0,
       failedRequests: 0,
       pending: [],
       pendingRoute: null,
@@ -718,6 +806,7 @@ export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
   ],
 
   page: async ({ page, _collectorState, _vitalsPusher }, use, testInfo) => {
+    pushStatusTarget.set(_vitalsPusher, testInfo);
     await attachCollector(page, testInfo, _collectorState, _vitalsPusher);
     try {
       await use(page);

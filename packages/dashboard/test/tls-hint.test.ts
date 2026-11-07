@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { withCertHint, type Transport } from '../src/http.js';
+import { createTransport, withCertHint, type Transport } from '../src/http.js';
 
 // Global fetch reports an untrusted certificate as TypeError('fetch failed') with the
 // TLS code on `cause` — alone, "fetch failed" tells a user behind a corporate proxy nothing.
@@ -35,6 +35,25 @@ describe('withCertHint — an untrusted certificate names the fix', () => {
     const original = fetchFailed('ECONNREFUSED');
     const transport = withCertHint(throwing(original));
     await expect(transport('https://a.blazemeter.com/')).rejects.toBe(original);
+  });
+
+  it('the real transport keeps the hint, and does not retry it (a retry cannot fix trust)', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const transport = createTransport({
+      fetch: async () => {
+        attempts += 1;
+        throw fetchFailed('SELF_SIGNED_CERT_IN_CHAIN');
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    const err = await transport('https://a.blazemeter.com/api/v4/masters/1').catch((e) => e);
+    expect(err.message).toContain('NODE_EXTRA_CA_CERTS');
+    expect(err.message).toContain('a.blazemeter.com');
+    expect(attempts).toBe(1);
+    expect(sleeps).toEqual([]);
   });
 
   it('passes a successful response through untouched', async () => {
