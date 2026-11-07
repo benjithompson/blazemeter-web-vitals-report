@@ -507,3 +507,38 @@ Each ticket has: **What to build**, **Owns / Touches**, **Implementation notes**
 - Soft Navigations: https://developer.chrome.com/blog/final-soft-navigations-origin-trial
 - InfluxDB line protocol (duplicate points): https://docs.influxdata.com/influxdb3/core/reference/line-protocol
 - OTLP metrics into Grafana: https://grafana.com/docs/learning-hub/intro-to-send-data/01-send-metrics/08-opentelemetry-metrics/
+
+## 11. Ticket → GitHub issue map
+
+Parent: **#23**. Every ticket is a sub-issue of #23; its "Blocked by" section lists the issue numbers it waits on.
+
+| Wave | Ticket | Issue | Blocked by |
+|---|---|---|---|
+| 0 | A1 CI + loud browser preconditions | #24 | none |
+| 0 | A2 esbuild bundlers ★ | #25 | none |
+| 0 | C0 web-vitals reference oracle | #26 | none |
+| 0 | C3 requestCount per Navigation | #27 | none |
+| 0 | C2 INP fast clicks | #28 | none (merge after #27) |
+| 0 | C4 push visibility and retry | #29 | none |
+| 0 | C5 Influx point uniqueness | #30 | none |
+| 0 | D2 CLI parseArgs | #31 | none |
+| 0 | D3 HTTP timeouts and retry | #32 | none |
+| 0 | D4 spread crash at scale | #33 | none |
+| 0 | E2 CSP meta | #34 | none |
+| 0 | D7 percentile decision (owner) | #35 | owner decision |
+| 1 | B1 format runtime ★ | #36 | #25 |
+| 1 | D1 cache correctness | #37 | #31, #32 |
+| 2 | B2 identity fields and validator ★ | #38 | #36 |
+| 2 | D5 lazy zip, one pipeline | #39 | #37 |
+| 2 | C1 collector test identity | #40 | #38, #27 |
+| 2 | D6 join on test.id ★ | #41 | #38, #33 |
+| 3 | C6 context-level instrumentation | #42 | #40, #28 |
+| 3 | E1 client-side render ★ | #43 | #25, #33, #41, #34 |
+| 3 | A3 release automation | #44 | #24, #25, #36 |
+| 4 | E3 canvas and lazy drill-down ★ | #45 | #43 |
+| 4 | C7 cross-site loss (#13) | #46 | #42 |
+| 4 | F1 soft navigations (design) | #47 | #42 |
+| 4 | F2 OTLP destination (design) | #48 | #29 |
+| 4 | A4 docs hygiene (last) | #49 | every Wave 0–3 code ticket |
+
+★ = critical path.
