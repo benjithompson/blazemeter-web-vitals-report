@@ -1,0 +1,90 @@
+<!doctype html>
+<!--
+  F1 prototype: the minimal SPA fixture. NOT production code, never shipped.
+  Served by run-prototype.mjs for every path (history fallback), so a hard load of
+  /products or /order/12345 also works.
+
+  Routes are client-side: a click on a [data-route] link calls history.pushState and
+  re-renders <main>, which is exactly the user-action + URL-change + contentful-paint
+  shape Chrome's soft-navigation heuristic looks for.
+    /               home: a hero image-free heading block
+    /products       fast handler, plain re-render
+    /order/12345    SLOW handler (~120 ms busy-wait, an INP signal) and a late banner
+                    that shifts the content ~900 ms after render, past the 500 ms
+                    hadRecentInput window (a CLS signal that must land on THIS soft
+                    Navigation, not on the one before)
+  The "silent" button changes the URL (replaceState) on a click, with no paint of new
+  content: the heuristic must NOT count it as a soft Navigation.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>F1 SPA fixture</title>
+  <style>
+    body { font: 16px/1.4 sans-serif; margin: 0; }
+    nav { padding: 8px; background: #eee; }
+    nav a, nav button { margin-right: 12px; }
+    main { padding: 16px; }
+    .hero { font-size: 40px; font-weight: bold; padding: 40px 0; }
+    .block { height: 220px; background: #cde; margin: 8px 0; padding: 8px; }
+    .banner { height: 120px; background: #fc9; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/" data-route="/">Home</a>
+    <a href="/products" data-route="/products" id="to-products">Products</a>
+    <a href="/order/12345" data-route="/order/12345" id="to-order">Order 12345</a>
+    <button id="silent" type="button">silent pushState</button>
+  </nav>
+  <main id="app"></main>
+  <script>
+    var views = {
+      '/': function () {
+        return '<div class="hero">Home</div><div class="block">Welcome to the fixture.</div>';
+      },
+      '/products': function () {
+        var items = '';
+        for (var i = 1; i <= 6; i++) items += '<li>Product ' + i + '</li>';
+        return '<div class="hero">Products</div><ul>' + items + '</ul><div class="block">Catalogue</div>';
+      },
+      '/order/12345': function () {
+        return '<div id="banner-slot"></div><div class="hero">Order 12345</div>' +
+          '<div class="block">Order details, a large text block that is the soft LCP candidate.</div>';
+      }
+    };
+
+    function render(path) {
+      var view = views[path] || function () { return '<div class="hero">Not found</div>'; };
+      document.getElementById('app').innerHTML = view();
+      if (path === '/order/12345') {
+        // A late banner pushes the content down: a layout shift with no recent input.
+        setTimeout(function () {
+          var slot = document.getElementById('banner-slot');
+          if (slot) slot.innerHTML = '<div class="banner">Late promo banner</div>';
+        }, 900);
+      }
+    }
+
+    function busyWait(ms) { var end = performance.now() + ms; while (performance.now() < end) {} }
+
+    document.addEventListener('click', function (e) {
+      var a = e.target.closest && e.target.closest('a[data-route]');
+      if (!a) return;
+      e.preventDefault();
+      var path = a.getAttribute('data-route');
+      if (path === '/order/12345') busyWait(120);   // a slow handler: an INP signal
+      history.pushState({}, '', path);
+      render(path);
+    });
+
+    document.getElementById('silent').addEventListener('click', function () {
+      // URL change, but no new contentful paint: must not be a soft Navigation.
+      history.replaceState({}, '', location.pathname + '?silent=1');
+    });
+
+    window.addEventListener('popstate', function () { render(location.pathname); });
+    render(location.pathname);
+  </script>
+</body>
+</html>
