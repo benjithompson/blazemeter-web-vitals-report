@@ -358,7 +358,7 @@ Each ticket has: **What to build**, **Owns / Touches**, **Implementation notes**
 **Blocked by:** none. **Size:** S
 
 #### D4. Remove the argument-spread crash at scale (verified)
-**What to build:** Replace every `Math.min(...xs)` / `Math.max(...xs)` in `view-model.ts` (lines 377, 378, 547, 548 and 549) with a single-pass loop helper. Add a scale regression test.
+**What to build:** Replace every `Math.min(...xs)` / `Math.max(...xs)` in `view-model.ts` with a single-pass loop helper. There are six spreads: lines 377, 378, 547, 548 and 549, plus the timeline's `dataMax` (`Math.max(p75 ?? 0, ...values)`), which this list first missed. Add a scale regression test.
 **Owns:** `packages/dashboard/src/view-model.ts` (those helpers only), `packages/dashboard/test/report-scale.test.ts`.
 **Implementation notes:** Check the rest of `packages/*/src` for any other spread of an unbounded array into a function call, such as `push(...xs)`, and fix those too.
 **Acceptance criteria**

@@ -17,7 +17,7 @@
 //   - Metric NAMES are open: unknown names pass through untouched, as do unknown
 //     fields — the additive ones (test.id, titlePath, path, pageIndex,
 //     lostNavigations) and any this version has never heard of.
-//   - Every field is preserved — issue #10 asserts a full round-trip of the
+//   - Every field is preserved — test/parse.test.ts round-trips the
 //     collector's real output through this parser.
 
 import {
@@ -61,7 +61,7 @@ export function parseSampleJson(raw: string): ParseResult {
   const decoded = decodeJson(raw);
   if (!decoded.ok) return decoded;
   // validateSample hands back the SAME object — nothing is rebuilt, so unknown fields
-  // and unknown metric names ride along. Issue #10 asserts the round-trip.
+  // and unknown metric names ride along (test/parse.test.ts round-trips them).
   const valid = validateSample(decoded.value);
   if (!valid.ok) return valid;
   // A valid on-disk Sample is a DashboardSample (whose test/navigationIndex are only

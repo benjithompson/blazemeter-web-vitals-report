@@ -1,7 +1,9 @@
 // bzm-vitals-dashboard — generator, not viewer.
-// Issue #2: fetch every Engine artifact for a master, extract namespaced by sessionId.
-// Issue #5: the tracer bullet — fetch → extract → adapt → attribute →
-//           aggregate crudely → embed → emit. #6–#9 replace the crude parts.
+// The pipeline: fetch every Engine's artifacts.zip for a master (or read local
+// artifacts) → read its records lazily in memory, namespaced by sessionId →
+// parse and adapt legacy records → attribute → aggregate → embed one data blob
+// → emit one self-contained HTML file. Nothing is extracted to disk; --extract
+// is a debugging aid only (extract.ts).
 
 export * from './http.js';
 export * from './api.js';

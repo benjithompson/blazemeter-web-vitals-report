@@ -1,4 +1,4 @@
-// The timeline's plain points (Navigations), drawn on a <canvas> (E3) — the
+// The timeline's plain points (Navigations), drawn on a <canvas> — the
 // one browser-only drawing module. Axes, gridlines, the p75 line and the Cold
 // Start diamonds stay SVG (views.ts); this paints the dots between those two
 // layers from the same geometry the hover hit-test searches

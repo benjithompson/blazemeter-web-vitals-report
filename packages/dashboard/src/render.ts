@@ -1,4 +1,4 @@
-// The emitter — ONE self-contained static HTML file, rendered in the browser (E1).
+// The emitter — ONE self-contained static HTML file, rendered in the browser.
 //
 // The file carries three things, all inline:
 //   1. the data, ONCE: the ReportData (attributed Samples, Outcomes, sessions,

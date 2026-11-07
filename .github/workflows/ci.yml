@@ -1,4 +1,4 @@
-# CI: typecheck, the full test suite on Chromium AND Firefox, and both standalone builds.
+# CI: typecheck, the Markdown link check, the full test suite on Chromium AND Firefox, and both standalone builds.
 #
 # CI=true is set by GitHub Actions. Under it, a Firefox case whose browser is missing
 # FAILS with "Firefox not installed: run npx playwright install firefox" instead of
@@ -40,6 +40,9 @@ jobs:
       - run: npm ci
 
       - run: npm run typecheck
+
+      # Every relative Markdown link and #anchor resolves (scripts/check-links.mjs).
+      - run: npm run check:links
 
       # Browser binaries are cached on the lockfile (which pins the Playwright version);
       # the install step still runs every time so --with-deps installs the OS libraries,

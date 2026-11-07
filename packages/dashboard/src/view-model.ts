@@ -1,12 +1,12 @@
 // The view model — everything the renderer needs, precomputed as plain data.
 //
-// ISOMORPHIC (E1): this module runs in Node (the drift guard, the fallback
+// ISOMORPHIC: this module runs in Node (the drift guard, the fallback
 // summary) AND in the browser — esbuild bundles it, unchanged, into the
 // report's one inline <script> (src/browser/entry.ts). So: no node:* imports,
 // no I/O, no globals, pure functions only. The browser and Node must build
 // deep-equal views from the same ReportData (test/browser-render.test.ts).
 //
-// Fast at 200k Samples (E3), without changing an answer: the drill-down
+// Fast at 200k Samples, without changing an answer: the drill-down
 // contents (a Route's Tests and histograms, an Engine's Navigations) and the
 // timeline's point objects are computed when first READ (lazyField: an
 // enumerable, memoizing getter — the view still deep-equals and serializes
@@ -183,7 +183,7 @@ export interface TimelineAxis {
   minTs: number;
   maxTs: number;
   /** The tick step, ms (TICK_STEPS). The renderer re-labels the ticks in the
-   *  viewer's time zone (E3) at the same resolution: day-scale steps carry the
+   *  viewer's time zone at the same resolution: day-scale steps carry the
    *  date, finer ones read HH:MM:SS. */
   stepMs: number;
   ticks: TimelineTick[];
@@ -311,7 +311,7 @@ function pointMeta(s: AttributedSample): TimelinePointMeta {
 }
 
 /**
- * A series' points as columns (E3) — what the canvas renderer and the hover
+ * A series' points as columns — what the canvas renderer and the hover
  * hit-test read: ts and value as typed arrays, in the series' (ts) order, and
  * per point its Engine, its Cold Start flag and its full meta, on demand.
  * At 200k Samples × 5 metrics the points as objects are a million
@@ -596,7 +596,7 @@ export interface ReportView {
 
 const LEGACY_KEY = '\u0000legacy';
 
-/** A Report-wide Test key function (D6): `test.id` when the Sample carries
+/** A Report-wide Test key function: `test.id` when the Sample carries
  *  one, else the (file, title, project) triple — with an id-less Sample folded
  *  into the one id its triple carries elsewhere in the Report, so an old and a
  *  new collector's Samples of the same Test stay one Test (testKeyResolver). */
@@ -646,8 +646,8 @@ function testLabel(samples: AttributedSample[]): string {
 }
 
 /** Math.min over an array of ANY length. `Math.min(...xs)` puts every
- *  element on the call stack and throws a RangeError at ~10^5 elements
- *  (issue #33). Folding pairwise through Math.min keeps its exact semantics:
+ *  element on the call stack and throws a RangeError at ~10^5 elements.
+ *  Folding pairwise through Math.min keeps its exact semantics:
  *  NaN propagates, -0 < +0, and an empty array gives `init` (default
  *  +Infinity, as `Math.min()` does). */
 function minOf(values: readonly number[], init = Infinity): number {
@@ -755,7 +755,7 @@ function buildEngines(
       p75s,
       navigations: [],
     };
-    // The Navigation rows: built when first read (E3), like a Route's drill-down.
+    // The Navigation rows: built when first read, like a Route's drill-down.
     lazyField(engine, 'navigations', () =>
       samples
         .map((s) => ({
@@ -923,7 +923,7 @@ function viewOf(data: ReportData, testKey: TestKeyOf, subsetOf: AttributedSample
       histograms: [],
       tests: [],
     };
-    // The drill-down's contents (E3) are built when first READ — the browser
+    // The drill-down's contents are built when first READ — the browser
     // reads them when the Route's drill-down is first expanded. Lazy, not
     // different: an enumerable getter that memoizes, so the view still
     // deep-equals (and JSON-serializes to) the eager one.

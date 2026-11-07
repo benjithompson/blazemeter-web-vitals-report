@@ -1,4 +1,4 @@
-// The report's markup, as strings — ISOMORPHIC (E1). The browser bundle
+// The report's markup, as strings — ISOMORPHIC. The browser bundle
 // (entry.ts) renders the interactive report with these functions from the
 // view model it builds in the page; Node uses the same functions for the no-JS
 // fallback summary (render.ts) and for the tests, which assert on exactly the
@@ -216,7 +216,7 @@ function histogramHtml(histo: HistogramView): string {
 
 // ---------------------------------------------------------------- timeline
 //
-// The wall-clock timeline (issue #8) — everything here is GEOMETRY over the
+// The wall-clock timeline — everything here is GEOMETRY over the
 // precomputed TimelineView; the model (axis union, ticks, points, p75, y
 // domain) is decided and tested in view-model.ts. Scatter, deliberately: each
 // point is one Sample event, and connecting lines would invent a continuity
@@ -225,7 +225,7 @@ function histogramHtml(histo: HistogramView): string {
 // The chart renderer walks chart.series — N series on the ONE shared axis —
 // so a foreign series later is one more loop iteration, not a rework.
 //
-// Three layers per chart (E3), stacked in one .tl-plot box:
+// Three layers per chart, stacked in one .tl-plot box:
 //   1. an SVG BEHIND: gridlines, tick labels, the zone label, the axis line
 //      and the p75 reference line;
 //   2. a <canvas>: the plain points (Navigations) — drawn by the browser
@@ -236,7 +236,7 @@ function histogramHtml(histo: HistogramView): string {
 // The plain points' tooltip comes from a hit-test (timelineHit) over the
 // same geometry. The box carries the chart's text alternative (aria-label).
 //
-// Time zone (E3): tick labels, the zone label on the axis and the tooltips
+// Time zone: tick labels, the zone label on the axis and the tooltips
 // read in a time zone the caller names — the viewer's local zone by default
 // in the browser, or UTC by the toggle. The model's ticks sit on clean UTC
 // boundaries; their labels are re-read here in the chosen zone.

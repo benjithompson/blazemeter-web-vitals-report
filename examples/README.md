@@ -65,7 +65,7 @@ machine: when the package is not installed, `npx` contacts the npm registry.
 ## No npm registry? The single-file variants
 
 Both halves of the flow also travel as single generated files, attached
-to this repo's [GitHub releases](../../../releases/latest):
+to this repo's [GitHub releases](https://github.com/benjithompson/blazemeter-web-vitals-report/releases/latest):
 
 - **Collector** — `bzm-playwright-vitals.ts`. Upload it as a *fifth* file next
   to the spec, and change the spec's import to the sibling file:

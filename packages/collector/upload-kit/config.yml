@@ -1,6 +1,6 @@
 # Standalone-collector upload kit — Taurus config for a direct-upload validation run.
-# Modeled on the probe run that already succeeded on 2 Engines
-# (.scratch/playwright-vitals-dashboard/probe/config.yml).
+# Modeled on a probe run that succeeded on 2 Engines (SPEC.md, "The real Taurus
+# invocation").
 #
 # concurrency 4 over 2 locations  ->  --workers 2, --repeat-each 4  (4 executions/engine, 8 total)
 # Derived from the real run: --workers = concurrency / engines

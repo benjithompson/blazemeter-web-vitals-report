@@ -45,7 +45,7 @@ export interface SessionSummary {
   unreadable: UnreadableFile[];
 }
 
-/** Everything the emitted HTML embeds. Issue #7 extends this shape. */
+/** Everything the emitted HTML embeds. */
 export interface ReportData {
   /** null when the Report was imported from local artifacts with no master
    *  id given — there is then no BlazeMeter Report to name or link to. */

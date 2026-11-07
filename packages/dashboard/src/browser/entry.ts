@@ -1,4 +1,4 @@
-// The report's one inline <script> (E1), bundled for the browser by
+// The report's one inline <script>, bundled for the browser by
 // scripts/build-browser.ts and embedded by render.ts. It:
 //   1. reads the embedded data blob — the ReportData as gzip-compressed,
 //      base64-encoded JSON — and unpacks it with DecompressionStream('gzip');
@@ -63,7 +63,7 @@ export interface BzmVitalsHandle {
    *  variant's view build once it is built (excludedView), and the canvas
    *  drawing so far (draw) — diagnostics. */
   timings: Record<string, number>;
-  /** The timeline's time zone in force, and the viewer's own (E3). */
+  /** The timeline's time zone in force, and the viewer's own. */
   zone?: ZoneChoice;
 }
 
@@ -431,9 +431,9 @@ async function start(): Promise<void> {
     lap('render');
     document.getElementById(STATUS_ID)?.setAttribute('hidden', '');
     setState(app, 'ready');
-    // E3: the excluded variant's VIEW (not its markup) is built once the page
+    // The excluded variant's VIEW (not its markup) is built once the page
     // is idle after first paint, so the toggle usually only renders it. A flip
-    // before then builds it on the spot, as it always could.
+    // before then builds it on the spot.
     if (hasExcludedVariant(outcomes)) whenIdle(() => void handle.excluded());
   } catch (err) {
     app.innerHTML = fallback; // never a half-rendered Report: back to the summary

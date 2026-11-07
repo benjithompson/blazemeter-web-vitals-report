@@ -5,8 +5,8 @@
 //
 // Cross-Engine attachment basenames are IDENTICAL by construction (basename is
 // sha1 of the fixed absolute path Taurus passes to every Engine). Extracting two
-// Engines' flat zips into one directory silently destroys half the Samples — the
-// failure this codebase has already suffered twice. So every extraction is
+// Engines' flat zips into one directory silently destroys half the Samples, and
+// nothing downstream can notice. So every extraction is
 // namespaced by sessionId: destRoot/{sessionId}/{entryName}.
 //
 // See SPEC.md → "Cross-Engine filename collision".

@@ -7,6 +7,7 @@
   "scripts": {
     "typecheck": "npm run build:browser --workspace packages/dashboard && tsc --build",
     "test": "npm run test --workspaces --if-present",
+    "check:links": "node scripts/check-links.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version && node .changeset/sync-dashboard-version.mjs && npm install --package-lock-only --ignore-scripts --no-audit --no-fund"
   },

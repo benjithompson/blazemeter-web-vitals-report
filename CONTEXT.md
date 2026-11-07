@@ -1,6 +1,6 @@
 # Context
 
-Ubiquitous language for the Playwright web-vitals dashboard. **Glossary only** — no implementation detail, no decisions. Decisions live in the [wayfinder map](.scratch/playwright-vitals-dashboard/map.md); the reasoning behind these terms is in [08](.scratch/playwright-vitals-dashboard/issues/08-identity-correlation.md).
+Ubiquitous language for the Playwright web-vitals dashboard. **Glossary only** — no implementation detail, no decisions. Decisions live in [SPEC.md → Implementation Decisions](SPEC.md#implementation-decisions); the reasoning behind these terms is in [SPEC.md → Identity and correlation](SPEC.md#identity-and-correlation).
 
 ## The chain
 

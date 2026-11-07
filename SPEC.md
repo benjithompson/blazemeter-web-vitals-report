@@ -2,7 +2,7 @@
 
 Triage: `ready-for-agent`
 
-Source: [wayfinder map](.scratch/playwright-vitals-dashboard/map.md) — destination reached 2026-07-16, 11 decisions resolved, 2 ruled out of scope, 0 open. Vocabulary: [CONTEXT.md](CONTEXT.md).
+Source: a design map kept outside this repository — destination reached 2026-07-16, 11 decisions resolved, 2 ruled out of scope, 0 open. Its decisions are inlined below under [Implementation Decisions](#implementation-decisions), and its scope calls under [Out of Scope](#out-of-scope). Vocabulary: [CONTEXT.md](CONTEXT.md).
 
 ---
 
