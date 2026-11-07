@@ -211,6 +211,13 @@ function trapSource(reportBinding: string, flushHook: string): string {
     // per 50 interactions, which DEGENERATES to the worst below 50 — and a scripted
     // journey drives a handful at most, so worst-interaction is the honest choice: a
     // within-harness regression signal, never a field-comparable p75.
+    //
+    // An interaction is SEEN when any entry for it arrives: an 'event' entry (only for
+    // durations >= the 16ms durationThreshold) or the 'first-input' entry, which the
+    // browser emits for the first interaction whatever its duration. Without the
+    // latter, a journey whose clicks were all fast read as 'no-interaction' — a claim
+    // that nothing was clicked. Later fast interactions still go unobserved, which is
+    // correct: INP is the WORST interaction, and one at or over 16ms would be observed.
     var inp = { value: null, status: 'unsupported' };
     var inpObs = null;
     var interactions = {};   // interactionId -> worst duration seen
@@ -219,10 +226,14 @@ function trapSource(reportBinding: string, flushHook: string): string {
       var es = list.getEntries ? list.getEntries() : list;
       for (var i = 0; i < es.length; i++) {
         var e = es[i];
-        if (!e.interactionId) continue;    // hover/scroll noise has interactionId 0
+        // hover/scroll noise has interactionId 0. A first-input entry always counts —
+        // under its own key if this engine gave it no interactionId; max() makes a
+        // double count of the same interaction harmless.
+        var key = e.interactionId || (e.entryType === 'first-input' ? 'first-input' : 0);
+        if (!key) continue;
         if (e.startTime > lastEntryStart) lastEntryStart = e.startTime;
-        var prev = interactions[e.interactionId];
-        if (prev === undefined || e.duration > prev) interactions[e.interactionId] = e.duration;
+        var prev = interactions[key];
+        if (prev === undefined || e.duration > prev) interactions[key] = e.duration;
       }
     }
     if (supported.indexOf('event') >= 0 &&
@@ -236,12 +247,18 @@ function trapSource(reportBinding: string, flushHook: string): string {
         // interactions from before observer registration completed.
         inpObs.observe({ type: 'event', durationThreshold: 16, buffered: true });
       } catch (e) { inp.status = 'error'; inpObs = null; }
+      // Same observer, so drain()'s takeRecords() covers both types. Best-effort: an
+      // engine without first-input keeps the event-only behaviour.
+      if (inpObs !== null && supported.indexOf('first-input') >= 0) {
+        try { inpObs.observe({ type: 'first-input', buffered: true }); } catch (e) {}
+      }
     }
 
     // An interaction's event-timing entry only exists once its next frame is PRESENTED,
     // which trails the paint by a variable few ms (measured: sometimes after two rAFs).
     // A flush that can wait therefore waits for the latest input's entry — bounded,
-    // because an interaction under the 16ms threshold never gets one. The listeners are
+    // because an interaction under the 16ms threshold (other than the first input) never
+    // gets one. The listeners are
     // passive and only read a timestamp.
     var lastInputAt = -1;
     function noteInput(e) { lastInputAt = e.timeStamp; }

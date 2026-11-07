@@ -63,6 +63,16 @@ function page(title: string, body: string): string {
 </html>`;
 }
 
+// The fast-click page (C2): a second button whose click handler does NO work, so the
+// interaction finishes well under event-timing's 16ms durationThreshold and emits no
+// 'event' entry at all. Only the first-input entry records it — the case the trap must
+// still report as an interaction, never as 'no-interaction'.
+const FAST = page('Fast', `<p>fast content</p>
+  <div id="fast">fast click</div>
+  <script>
+    document.getElementById('fast').addEventListener('click', function () {});
+  </script>`);
+
 // The hostile page sabotages the trap's flush-time reads. Page scripts run AFTER init
 // scripts, so the trap's observers are already registered when this runs — which is the
 // point: LCP/CLS ride on observer state and survive; TTFB/FCP are read from the (now
@@ -77,6 +87,7 @@ const ROUTES: Record<string, string> = {
   '/second': page('Second', '<p>second content</p>'),
   '/third': page('Third', '<p>third content</p>'),
   '/hostile': HOSTILE,
+  '/fast': FAST,
 };
 
 export interface FixtureServer {
