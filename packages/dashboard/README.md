@@ -31,8 +31,8 @@ ungracefully emits no zip — a normal outcome, not an error).
 
 The script writes to the repo root's `.artifact-cache/`. The CLI uses, in order:
 
-1. `$BZM_VITALS_CACHE_DIR`, when set;
-2. otherwise `--cache-dir <dir>`;
+1. `--cache-dir <dir>`, when given;
+2. otherwise `$BZM_VITALS_CACHE_DIR`, when set;
 3. otherwise `./.artifact-cache` under the current directory.
 
 This is the same for the installed bin, a repo checkout and the single-file

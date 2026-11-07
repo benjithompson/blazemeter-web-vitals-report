@@ -145,8 +145,8 @@ already installed.
   milliseconds and is always bounded.
 - Re-running the dashboard for a finished master is instant — artifacts are
   cached in `./.artifact-cache/` under the directory you run it from (never
-  commit it). `--cache-dir <dir>` or `BZM_VITALS_CACHE_DIR` puts the cache
-  elsewhere, and `--refresh` fetches the master again. A master cached while
+  commit it). `--cache-dir <dir>` (or, without it, `BZM_VITALS_CACHE_DIR`)
+  puts the cache elsewhere, and `--refresh` fetches the master again. A master cached while
   it was still running is re-checked on the next run.
 
 ## No npm access? Single-file builds

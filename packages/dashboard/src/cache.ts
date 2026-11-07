@@ -82,15 +82,15 @@ export interface CacheRootInputs {
 
 /**
  * Where the cache lives, for every install mode alike (package, installed bin,
- * or standalone file): $BZM_VITALS_CACHE_DIR, else --cache-dir, else
- * ./.artifact-cache under the cwd. The module's own location is never
+ * or standalone file): --cache-dir, else $BZM_VITALS_CACHE_DIR, else
+ * ./.artifact-cache under the cwd — flag over env over default. The module's own location is never
  * consulted, so a path with a space (file:///…/my%20dir) cannot leak into it.
  */
 export function defaultCacheRoot(inputs: CacheRootInputs = {}): string {
   const cwd = inputs.cwd ?? process.cwd();
+  if (inputs.cacheDir) return path.resolve(cwd, inputs.cacheDir);
   const fromEnv = (inputs.env ?? process.env).BZM_VITALS_CACHE_DIR?.trim();
   if (fromEnv) return path.resolve(cwd, fromEnv);
-  if (inputs.cacheDir) return path.resolve(cwd, inputs.cacheDir);
   return path.resolve(cwd, '.artifact-cache');
 }
 

@@ -173,13 +173,15 @@ describe('D1: the cache root', () => {
     }
   });
 
-  it('is $BZM_VITALS_CACHE_DIR, else --cache-dir, else ./.artifact-cache under the cwd', async () => {
+  it('is --cache-dir, else $BZM_VITALS_CACHE_DIR, else ./.artifact-cache under the cwd', async () => {
     const resolve = defaultCacheRoot;
     const cwd = '/work/my reports';
     expect(resolve({ env: {}, cwd })).toBe('/work/my reports/.artifact-cache');
     expect(resolve({ env: {}, cwd, cacheDir: 'cache dir' })).toBe('/work/my reports/cache dir');
+    expect(resolve({ env: { BZM_VITALS_CACHE_DIR: '/srv/bzm cache' }, cwd })).toBe('/srv/bzm cache');
+    // The flag wins over the env var.
     expect(resolve({ env: { BZM_VITALS_CACHE_DIR: '/srv/bzm cache' }, cwd, cacheDir: 'x' })).toBe(
-      '/srv/bzm cache',
+      '/work/my reports/x',
     );
     expect(resolve({ env: { BZM_VITALS_CACHE_DIR: '  ' }, cwd })).toBe('/work/my reports/.artifact-cache');
   });
@@ -365,7 +367,7 @@ describe('D1: the CLI flags', () => {
     sessions: [{ id: 'r-v4-a', status: 'ENDED', zip: zipOf('a.json', 'a') as Buffer | null }],
   });
 
-  it('--cache-dir chooses the cache; BZM_VITALS_CACHE_DIR overrides it', async () => {
+  it('--cache-dir chooses the cache and overrides BZM_VITALS_CACHE_DIR, which applies without it', async () => {
     const out = path.join(cacheRoot, 'r.html');
     const flagDir = path.join(cacheRoot, 'flag dir');
     const envDir = path.join(cacheRoot, 'env dir');
@@ -379,8 +381,16 @@ describe('D1: the CLI flags', () => {
       transport: t(),
       log: () => {},
     });
-    expect(existsSync(path.join(envDir, '711', 'manifest.json'))).toBe(true);
-    expect(existsSync(path.join(flagDir, '711'))).toBe(false);
+    expect(existsSync(path.join(flagDir, '711', 'manifest.json'))).toBe(true);
+    expect(existsSync(path.join(envDir, '711'))).toBe(false);
+
+    await runCli({
+      argv: ['--master', '712', '--out', out],
+      env: { ...ENV, BZM_VITALS_CACHE_DIR: envDir },
+      transport: t(),
+      log: () => {},
+    });
+    expect(existsSync(path.join(envDir, '712', 'manifest.json'))).toBe(true);
   });
 
   it('--refresh refetches a finished, cached master; without it the rerun is offline', async () => {

@@ -56,8 +56,8 @@ const HELP = [
   '',
   'Options:',
   '  --out <report.html>         Where to write the report (required).',
-  '  --cache-dir <dir>           Cache directory (API mode). Default ./.artifact-cache;',
-  '                              BZM_VITALS_CACHE_DIR, when set, takes precedence.',
+  '  --cache-dir <dir>           Cache directory (API mode); overrides BZM_VITALS_CACHE_DIR.',
+  '                              Default ./.artifact-cache under the current directory.',
   '  --refresh                   Ignore the cache for this master and fetch it again.',
   '  -h, --help                  Print this help and exit.',
   '  --version                   Print the version and exit.',
@@ -67,7 +67,7 @@ const HELP = [
   '  BLAZEMETER_API_KEY_ID       Key id and secret as discrete variables (CI);',
   '  BLAZEMETER_API_KEY_SECRET   used when BLAZEMETER_API_KEY is unset.',
   '  BLAZEMETER_API_BASE         API host; default https://a.blazemeter.com.',
-  '  BZM_VITALS_CACHE_DIR        Cache directory; overrides --cache-dir.',
+  '  BZM_VITALS_CACHE_DIR        Cache directory, when --cache-dir is not given.',
 ].join('\n');
 
 /** A command-line mistake: the bin prints `message` alone (no stack) and exits
@@ -89,7 +89,7 @@ export interface RunCliOptions {
   env?: NodeJS.ProcessEnv;
   /** Injected by tests; the real run uses global fetch. */
   transport?: Transport;
-  /** Injected by tests; overrides BZM_VITALS_CACHE_DIR and --cache-dir. */
+  /** Injected by tests; overrides --cache-dir and BZM_VITALS_CACHE_DIR. */
   cacheRoot?: string;
   /** Progress messages. Defaults to stderr; the HTML goes to --out, never stdout. */
   log?: (message: string) => void;
