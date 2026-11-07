@@ -33,7 +33,7 @@ import { renderHtml } from './render.js';
  *  runtime read of package.json, so the one-file standalone builds (which ship
  *  with no package.json beside them) carry it inlined with no bundler support.
  *  test/cli-args.test.ts fails if it ever drifts from package.json. */
-export const DASHBOARD_VERSION = '0.4.0';
+export const DASHBOARD_VERSION = '0.5.0';
 
 const PROGRAM = 'bzm-vitals-dashboard';
 
