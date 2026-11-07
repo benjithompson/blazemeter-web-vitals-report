@@ -6,9 +6,12 @@
   ],
   "scripts": {
     "typecheck": "tsc --build",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "changeset": "changeset",
+    "version-packages": "changeset version && node .changeset/sync-dashboard-version.mjs && npm install --package-lock-only --ignore-scripts --no-audit --no-fund"
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^5.5.0",
