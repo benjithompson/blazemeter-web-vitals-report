@@ -169,10 +169,9 @@ describe.skipIf(!cachePresent)('report-scale: the real demo Report through the C
 
 // ------------------------------------------------------------ 200k Samples
 //
-// Issue #33 (D4): at 200k Samples `Math.min(...values)` in the view model
-// spread every measured value onto the call stack and threw
-// `RangeError: Maximum call stack size exceeded`. Unlike the block above,
-// this one NEVER skips: it builds its Samples synthetically (one cheap
+// At 200k Samples nothing in the view model may spread the measured values
+// onto the call stack (`Math.min(...values)` throws `RangeError: Maximum call
+// stack size exceeded` there). Unlike the block above, this one NEVER skips: it builds its Samples synthetically (one cheap
 // template with a varying ts, Route and LCP) and drives the same two calls
 // the CLI makes — assembleReportData, then buildReportVariants. @slow, but it
 // runs in CI and stays well under its 15 s budget.
@@ -242,17 +241,17 @@ describe('report-scale @slow: 200k synthetic Samples (issue #33)', () => {
 
 // ------------------------------------------- E1: size and speed at scale
 //
-// Issue #43 (E1): the server used to render BOTH variants (failed Executions
-// included and excluded) as full HTML — every Navigation row and every
-// timeline point twice — so the file grew with Samples × charts × variants:
-// 38.2 MB at 20k Samples on the 2026-11-07 measurement. Now the data is
-// embedded ONCE (gzip + base64) and the browser renders it. These NEVER skip:
-// the Samples are synthetic, shaped like a real run (helpers/synthetic.ts).
+// The data is embedded ONCE (gzip + base64) and the browser renders both
+// variants (failed Executions included and excluded) from it. Rendered on the
+// server as full HTML, every Navigation row and timeline point would be
+// written twice, and the file would grow with Samples × charts × variants
+// (55 MiB at 20k Samples on the same data). These NEVER skip: the Samples are
+// synthetic, shaped like a real run (helpers/synthetic.ts).
 //
 // Recorded (this synthetic run: 5 vitals per Navigation, 1 in 10 Executions
 // failed; one developer machine):
-//   20k Samples:  1.27 MiB  (the pre-E1 renderer: 55.0 MiB on the same data)
-//   200k Samples: 12.3 MiB, generated in ~6.5 s, opened in Chromium in ~3.4 s.
+//   20k Samples:  1.28 MiB
+//   200k Samples: 12.3 MiB, generated in ~5 s, opened in Chromium in ~1.8–2.0 s.
 
 const MB = 1024 * 1024;
 
@@ -319,15 +318,18 @@ describe('report-scale E1 @slow: a 200k-Sample report', () => {
     }
   }, 60_000);
 
-  // E3 (issue #45): the timeline's points on a canvas, the drill-downs built
-  // on first expand at every level, the excluded variant's view built at idle.
-  // Recorded (this synthetic run, Chromium headless, one developer machine):
-  //   first paint: 472 elements / 707 nodes (the points: zero DOM nodes);
+  // The timeline's points on a canvas, the drill-downs built on first expand
+  // at every level, the excluded variant's view built at idle from the
+  // columnar Sample index built at load (the one pass over every Sample's
+  // vitals). Recorded (this synthetic run, Chromium headless, one developer
+  // machine; timings are window.bzmVitals.timings):
+  //   first paint: 472 elements / 706 nodes (the points: zero DOM nodes);
+  //   load: index ~230–280 ms, view ~310–410 ms;
+  //   the excluded view's build (excludedView): ~130–165 ms;
   //   toggle, worst case (flipped the instant the report is ready, so the
-  //   click builds the excluded view, renders it and paints): ~0.38–0.45 s
-  //   (pre-E3: ~2.5 s); toggle after the idle-time build (the first flip
-  //   renders the variant's markup): ~50 ms; later flips: ~10 ms;
-  //   opened in ~1.9–2.4 s (pre-E3: ~3.4 s).
+  //   click builds the excluded view, renders it and paints): ~0.16–0.22 s;
+  //   toggle after the idle-time build (the first flip renders the variant's
+  //   markup): ~20–35 ms; later flips: ~5–20 ms; opened in ~1.8–2.0 s.
   it.skipIf(!haveChromium)(
     'E3: under 5k DOM nodes at first paint, a variant toggle under 500 ms, and a canvas point\'s tooltip on hover',
     async () => {

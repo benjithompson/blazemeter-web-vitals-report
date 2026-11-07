@@ -1,4 +1,4 @@
-// Issue #34 (E2) — a Content-Security-Policy that enforces "zero external
+// A Content-Security-Policy that enforces "zero external
 // requests". The emitted file carries a CSP <meta> that lets the browser load
 // nothing but its own inline <style> and <script>. This test opens the real
 // emitted HTML in Chromium over file:// and asserts the browser saw no CSP

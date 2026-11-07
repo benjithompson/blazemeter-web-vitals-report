@@ -1,4 +1,4 @@
-// Seam A — issue #15: the walking skeleton, proven end-to-end. Real `npx playwright test`
+// Seam A — the walking skeleton, proven end-to-end. Real `npx playwright test`
 // child runs (the tester's exact adoption) push measured vitals to a fake BlazeMeter API
 // double, and we assert on the requests that DOUBLE actually captured — the resolution GET
 // and the injection POST(s) — plus the on-disk artifacts, exactly as Seam 1 does. Never a

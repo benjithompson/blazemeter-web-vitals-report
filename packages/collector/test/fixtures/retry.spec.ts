@@ -1,4 +1,4 @@
-// Fixture spec for issue #4 — a retry is ANOTHER Execution and records its own Outcome.
+// Fixture spec — a retry is ANOTHER Execution and records its own Outcome.
 // Run under --retries 1: attempt 0 fails on the retry-index assertion, attempt 1 passes.
 import { test, expect } from 'bzm-playwright-vitals';
 

@@ -1,4 +1,4 @@
-// Seam 1 — C6 (#42): instrumentation lives on the CONTEXT, so every page a test opens in
+// Seam 1 — instrumentation lives on the CONTEXT, so every page a test opens in
 // its fixture-provided context is measured: popups, context.newPage(), and the `page`
 // fixture itself (the context's first page). Each Sample carries the pageIndex of the
 // page it was measured on; navigationIndex stays unique across the whole Execution.

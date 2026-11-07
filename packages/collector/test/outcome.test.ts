@@ -1,4 +1,4 @@
-// Seam 1 — issue #4: the Execution Outcome record and vitals.route(). Same seam
+// Seam 1 — the Execution Outcome record and vitals.route(). Same seam
 // discipline as tracer/vitals: real Playwright child runs, assertions on the JSON files
 // that survive on disk. Four runs feed the assertions here (the passed/failed happy path
 // and its (repeat, worker) join ride the existing journey run in tracer.test.ts):
@@ -12,7 +12,7 @@
 //              NO Outcome exists anywhere — absence is the crash signal, never faked.
 //   routed   — route.spec.ts: vitals.route() lands verbatim on the current Navigation's
 //              Sample; omitting it leaves the field absent and the raw url intact.
-//   identity — identity/ (C1, #40): collision.spec.ts holds two describe blocks with a
+//   identity — identity/: collision.spec.ts holds two describe blocks with a
 //              same-titled test, and alpha/ + beta/ each hold a same-name.spec.ts. On
 //              (file, title, project) both pairs collide; test.id, titlePath and path
 //              must tell them apart, on Samples and Outcomes alike.
@@ -115,7 +115,7 @@ describe('status covers the non-happy paths', () => {
     // Observed Playwright behavior, pinned: `test.skip('title', fn)` never runs any
     // fixture, so neither an Outcome nor a Sample can exist. The dashboard must NOT
     // read this absence as a crash — it treats missing-outcome as crashed only for
-    // Executions that produced Samples (nuance for #9).
+    // Executions that produced Samples (the include-failed toggle relies on it).
     expect(outcomesFor(outcomesOutcomes, 'Skipped Statically').length).toBe(0);
     expect(samplesFor(outcomesSamples, 'Skipped Statically').length).toBe(0);
   });

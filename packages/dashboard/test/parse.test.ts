@@ -2,8 +2,8 @@
 //
 // schemaVersion mismatch is REJECTED LOUDLY (recorded per-file with a reason,
 // never silently misread). Metric NAMES are open — unknown names pass through.
-// Every field is preserved: issue #10 feeds the collector's real output through
-// this parser and asserts a full round-trip.
+// Every field is preserved: the collector's round-trip seam (roundtrip.test.ts)
+// feeds its real output through this parser and asserts a full round-trip.
 
 import { describe, it, expect } from 'vitest';
 import { OUTCOME_ATTACHMENT_PREFIX, SAMPLE_ATTACHMENT_PREFIX } from 'bzm-vitals-format';

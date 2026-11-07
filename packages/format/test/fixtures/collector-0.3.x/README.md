@@ -1,8 +1,8 @@
 # collector 0.3.x records: the post-C1 fixture
 
 Real bytes, not hand-written. These are the original `bzm-vitals-sample-<n>.json` and
-`bzm-vitals-outcome.json` files the collector wrote once C1 (#40) made `testIdentity()`
-populate `test.id`, `test.titlePath` and `test.path`. They come from Chromium runs of the
+`bzm-vitals-outcome.json` files a collector writes when `testIdentity()` populates
+`test.id`, `test.titlePath` and `test.path`. They come from Chromium runs of the
 collector's own fixture specs (`identity/`, `vitals` and `outcomes`) through the Seam 1
 harness (`packages/collector/test/helpers/run-playwright.ts`). Each file name is
 `<spec>--<Playwright output folder>--<original name>`.

@@ -1,13 +1,13 @@
 // Seam 1 — a navigation that swaps the document's frame still leaves the departing
-// document's Sample. This was a measured loss (cross-site, #13) and, from Playwright
-// 1.63 (Chromium RenderDocument), the fate of EVERY navigation: a binding call made at
-// pagehide never reaches Node.
+// document's Sample. A cross-site navigation swaps it, and on Playwright 1.63+ (Chromium
+// RenderDocument) every navigation does: a binding call made at pagehide never reaches
+// Node, so the Sample has to be on its way before then.
 //
-// C7 (#46) re-verified #13 on Playwright 1.63: 127.0.0.1 and localhost are different
-// SITES (an IP host is its own site; a port never is part of one), so every navigation
-// here between them is cross-site. Every way of leaving — goto(), link click, form
-// submit, location assignment, history — keeps the departing Sample, and a pending
-// vitals.route() lands on the document it was declared for, never the next one.
+// 127.0.0.1 and localhost are different SITES (an IP host is its own site; a port never
+// is part of one), so every navigation here between them is cross-site. Every way of
+// leaving — goto(), link click, form submit, location assignment, history — keeps the
+// departing Sample, and a pending vitals.route() lands on the document it was declared
+// for, never the next one.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';

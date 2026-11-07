@@ -1,4 +1,4 @@
-// Guard — C6 (#42). The collector flushes a document before a test-driven navigation by
+// Guard — the collector flushes a document before a test-driven navigation by
 // wrapping these Page methods on each measured page instance. If Playwright ever renames
 // or removes one, the wrap would no longer sit on the method testers call and that
 // navigation would silently stop flushing. This fails first, naming the method.

@@ -1,7 +1,7 @@
-// Regression guard for the 0.1.0 bin bug: npm installs the bin as a symlink, so
-// process.argv[1] (the symlink) never equals import.meta.url (realpath-resolved)
-// under a raw compare, and the CLI silently no-ops. isEntryPoint must resolve the
-// symlink and still recognize the module as the entry point.
+// npm installs the bin as a symlink, so process.argv[1] (the symlink) never
+// equals import.meta.url (realpath-resolved) under a raw compare, and a CLI that
+// compared them would silently do nothing. isEntryPoint must resolve the symlink
+// and still recognize the module as the entry point.
 
 import { describe, it, expect } from 'vitest';
 import { pathToFileURL } from 'node:url';

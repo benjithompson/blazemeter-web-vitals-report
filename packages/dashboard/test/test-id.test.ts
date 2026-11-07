@@ -1,9 +1,10 @@
-// D6 (issue #41): join and group on `test.id`, with the (file, title, project)
-// fallback. What is pinned here:
+// Join and group on `test.id`, with the (file, title, project) fallback. What
+// is pinned here:
 //   - two Tests sharing file + title + project (a describe chain, or two spec
 //     dirs with the same basename) are TWO Tests when they carry distinct ids,
-//     and each Outcome joins to its OWN Samples — before D6 they collapsed into
-//     one Test and the later Outcome's verdict overwrote the other's;
+//     and each Outcome joins to its OWN Samples — on the triple alone they
+//     would be one Test, and the later Outcome's verdict would overwrite the
+//     other's;
 //   - labels read `titlePath.join(' › ')` and `path` when present;
 //   - 0.2.x records (no id) key, label and join exactly as before (X3), proven
 //     on the real collector-0.2.1 bytes;
@@ -44,8 +45,9 @@ const ENG_B = 'r-v4-eng-b';
 let tsCounter = 1794070000000;
 
 /** Same file basename, same title, same project — only the describe chain
- *  (and Playwright's testId) tells them apart. C1's same-title shape. Both run
- *  on worker 0, one after the other, so pre-D6 their Execution keys collide too. */
+ *  (and Playwright's testId) tells them apart: the collector's same-title
+ *  shape. Both run on worker 0, one after the other, so without the id their
+ *  Execution keys collide too. */
 function guest(repeat = 0, worker = 0, withId = true): TestIdentity {
   return {
     file: 'checkout.spec.ts',

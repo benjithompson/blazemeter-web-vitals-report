@@ -211,8 +211,12 @@ near. Each chart carries a text alternative (`aria-label`): what it plots, how
 many Samples, the span, the p75 and the Cold Starts.
 
 Times read in the viewer's local time zone, named beside the "show times in UTC"
-toggle and on each chart's axis (`EST`, `GMT+5:30`, `UTC`). The toggle re-reads
-the axis labels, the tooltips and the text alternatives in UTC. The tick marks
-stay on clean UTC boundaries, so in a zone with a non-hour offset an hour-step
-tick reads, for example, `10:30:00`. The Navigation rows of a drill-down keep
-their UTC time column (headed `time (UTC)`).
+toggle and on each chart's axis (`EST`, `GMT+5:30`, `UTC`). The tick marks sit on
+round times in the zone in force, so an hour step reads `23:00:00` in
+Asia/Kolkata too, and a day step reads local midnights. When the span crosses a
+daylight-saving change, the axis names both zones (`EDT/EST`) and the ticks keep
+to the local clock. The Navigation rows of a drill-down read in the same zone,
+and their time column names it (`time (EST)`); rows on both sides of a change
+carry their own zone. The toggle re-reads all of it in UTC (or back): the axis,
+the tooltips, the text alternatives, and every Navigation row already shown,
+including rows added with "show more".

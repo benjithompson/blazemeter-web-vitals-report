@@ -1,4 +1,4 @@
-// Seam 1 — issue #3: all five vitals as {value, status}, every status TRUE. Same seam
+// Seam 1 — all five vitals as {value, status}, every status TRUE. Same seam
 // discipline as tracer.test.ts: real Playwright child runs, assertions on the JSON files
 // that survive on disk. Three runs feed every assertion here:
 //

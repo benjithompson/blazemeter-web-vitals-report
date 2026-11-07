@@ -63,7 +63,7 @@ export const UI_STRINGS = {
   legacyTestGroup: '(no test identity — legacy collector)',
   engineSpreadHeading: 'Engine spread — p75 by Engine, shown, never adjudicated',
   navigationsHeading: 'Navigations',
-  timeColumn: 'time (UTC)',
+  timeColumn: 'time',
   urlColumn: 'URL',
   outcomeColumn: 'Execution',
   outcomeUnavailable: 'outcome unavailable',

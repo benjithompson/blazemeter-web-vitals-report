@@ -1,7 +1,6 @@
 // The Route-derivation table: every row is [declared route | undefined, url, expected Route].
-// It was first run against BOTH pre-B1 copies of routeOf (collector shared.ts and dashboard
-// aggregate.ts) to prove they behaved identically before the move; it now pins the one copy
-// that lives in format.
+// It pins routeOf, the one copy in format that the collector and the dashboard both import,
+// so the two can never derive different Routes from the same URL.
 
 export const ROUTE_TABLE: ReadonlyArray<readonly [route: string | undefined, url: string, expected: string]> = [
   // A declared Route always wins, verbatim — even when it is empty or looks like a URL.

@@ -1,6 +1,6 @@
 // Unit seam for the BlazeMeter destination's PURE Sample→interval mapping and its env
 // readers. No network, no browser — every input is a hand-built format-v1 Sample or a
-// plain env object, so these pin the injection contract (issue #15) exactly and run in
+// plain env object, so these pin the injection contract exactly and run in
 // milliseconds. The real-run Seam A (push.test.ts) proves the SAME shapes reach a live
 // server double; this file proves each rule in isolation.
 

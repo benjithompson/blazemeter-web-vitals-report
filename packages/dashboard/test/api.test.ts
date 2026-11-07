@@ -142,13 +142,13 @@ describe('fetchArtifactBytes', () => {
   });
 });
 
-// ------------------------------------------------------------------ D3 (#32)
+// ------------------------------------------------- the real transport
 //
 // The real transport against REAL local HTTP servers (127.0.0.1, ephemeral
-// ports — still no test touches the internet). Before D3 a server that
-// accepted the connection and never answered hung the CLI forever, and
-// BLAZEMETER_API_BASE was ignored, so the dashboard could not even be pointed
-// at such a server.
+// ports — still no test touches the internet). A server that accepts the
+// connection and never answers must time out rather than hang the CLI, and
+// BLAZEMETER_API_BASE must be honoured, which is what lets these tests point
+// the dashboard at such a server at all.
 
 interface FakeServer {
   base: string;

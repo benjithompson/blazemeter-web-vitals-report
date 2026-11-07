@@ -242,8 +242,8 @@ describe('Seam 2 — canonical Samples across two Engines with colliding basenam
     const html = await runSynthesized();
 
     // The name threads all the way into the embedded blob (Seam 2's rule:
-    // parse it back out), then becomes the visible <title> and <h1> — in place
-    // of the bare master id the header used to show.
+    // parse it back out), then becomes the visible <title> and <h1> — a name
+    // people recognise, where a bare master id says nothing.
     expect(parseBlob(html).reportName).toBe('Checkout journey — nightly');
     expect(html).toContain('<title>Checkout journey — nightly</title>');
     expect(html).toContain('<h1>Checkout journey — nightly</h1>');
@@ -283,8 +283,8 @@ describe('Seam 2 — canonical Samples across two Engines with colliding basenam
     expect(script).not.toMatch(/\bfetch\s*\(|\bWorker\b|createObjectURL|importScripts|\beval\s*\(/);
     expect(script).not.toMatch(/["'`](?:blob|data):/);
 
-    // The scan covers the bytes AND the decompressed blob: since E1 the data
-    // is gzipped, so a byte search alone could no longer see into it.
+    // The scan covers the bytes AND the decompressed blob: the data is
+    // gzipped, so a byte search alone cannot see into it.
     const decoded = JSON.stringify(parseBlob(html));
     for (const text of [html, decoded]) {
       // No pre-signed URL ever lands in the output.

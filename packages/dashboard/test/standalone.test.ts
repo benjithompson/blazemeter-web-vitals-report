@@ -199,7 +199,7 @@ describe('the standalone file behaves as the package does', () => {
     expect(result.stderr).toContain('usage: bzm-vitals-dashboard');
   }, 60_000);
 
-  // D2 (#31): the version is inlined — no package.json sits beside a download.
+  // The version is inlined — no package.json sits beside a download.
   it('--version prints the inlined package version, and --help the usage', async () => {
     const version = await execFileP(process.execPath, [TSX_CLI, standalonePath, '--version'], {
       cwd: workDir,

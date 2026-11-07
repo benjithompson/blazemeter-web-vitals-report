@@ -11,11 +11,15 @@
 // timeline's point objects are computed when first READ (lazyField: an
 // enumerable, memoizing getter — the view still deep-equals and serializes
 // to the eager one); a timeline series is built as typed columns
-// (seriesColumns); and a few WeakMap caches of DERIVED data (a Sample's point
-// meta, its Route, its Test key; the timeline tallies the exclude-failed
-// variant filters instead of re-walking every Sample) make the second variant
-// cheap. Memoization only: every function still returns the same value for
-// the same input (test/timeline-canvas.test.ts pins the equivalences).
+// (seriesColumns); every Sample's record is read ONCE, into a columnar
+// SampleIndex (aggregate.ts: Route, Cold Start flag, per-metric status and
+// value), which both variants' aggregates and timelines read instead of the
+// records; and a few WeakMap caches of DERIVED data (a Sample's point meta, its
+// Route, the Test keys by index position; the timeline tallies the
+// exclude-failed variant filters instead of re-tallying every Sample) make the
+// second variant cheap. Memoization only: every function still returns the
+// same value for the same input (test/timeline-canvas.test.ts pins the
+// equivalences).
 //
 // The rendering layer (src/browser/views.ts) consumes this and decides
 // NOTHING: threshold dots (p75 only — the dot is a field that exists once per
@@ -31,20 +35,25 @@
 
 import type { Metric } from 'bzm-vitals-format';
 import {
-  aggregateRoutes,
-  excludeFailedExecutions,
+  aggregateIndexed,
+  CODE_NOT_CARRIED,
+  CODE_POOLED,
+  keptPositions,
   NOT_CARRIED,
   percentile,
-  routeOfSample,
+  sampleIndex,
   testKeyResolver,
   summarizeOutcomes,
   type MetricAggregate,
   type OutcomeSummary,
   type RouteRow,
+  type SampleIndex,
 } from './aggregate.js';
 import type { AttributedSample, SampleExecutionStatus } from './attribute.js';
 import type { ReportData, SessionSummary } from './report.js';
 import { threshold, type ThresholdBand } from './thresholds.js';
+
+export { sampleIndex, type SampleIndex };
 
 /** Canonical metric column order; open-set extras follow, alphabetically. */
 const KNOWN_METRIC_ORDER = ['ttfb', 'fcp', 'lcp', 'cls', 'inp'];
@@ -172,9 +181,10 @@ export interface TimelineSeries {
 }
 
 export interface TimelineTick {
-  /** Absolute epoch ms, on a clean wall-clock boundary. */
+  /** Absolute epoch ms, on a clean wall-clock boundary (a whole step into
+   *  the day, read in the zone the tick is for: UTC for the model's ticks). */
   ts: number;
-  /** The UTC wall-clock reading of ts — HH:MM:SS (date-prefixed past day spans). */
+  /** The wall-clock reading of ts — HH:MM:SS (date-prefixed past day spans). */
   label: string;
 }
 
@@ -182,9 +192,10 @@ export interface TimelineAxis {
   /** The union of all series' ts ranges — absolute epoch ms. */
   minTs: number;
   maxTs: number;
-  /** The tick step, ms (TICK_STEPS). The renderer re-labels the ticks in the
-   *  viewer's time zone at the same resolution: day-scale steps carry the
-   *  date, finer ones read HH:MM:SS. */
+  /** The tick step, ms (TICK_STEPS). The model's ticks sit on UTC
+   *  boundaries; the renderer places the same step on the boundaries of the
+   *  zone in force (alignedTicks) — 23:00 IST, not 22:30 — and labels them at
+   *  this resolution: day-scale steps carry the date, finer ones read HH:MM:SS. */
   stepMs: number;
   ticks: TimelineTick[];
 }
@@ -230,6 +241,45 @@ function tickLabel(ts: number, step: number): string {
 }
 
 /**
+ * Tick instants over [minTs, maxTs] on round wall-clock boundaries of a zone:
+ * every ts whose reading in the zone (ts + offsetAt(ts)) is a whole number of
+ * `step`s, ascending. `offsetAt` gives the zone's UTC offset at an instant, in
+ * ms — 0 throughout for UTC (the model's ticks). An offset that is not a whole
+ * hour (+5:30, -3:30) moves the boundaries with it; across an offset change
+ * (DST) the ticks follow the wall clock: a 6-hour step stays on 00/06/12/18
+ * local, and a repeated hour is ticked once in each offset. Pure.
+ */
+export function alignedTicks(
+  minTs: number,
+  maxTs: number,
+  step: number,
+  offsetAt: (ts: number) => number = () => 0,
+): number[] {
+  const onBoundary = (ts: number): boolean => (((ts + offsetAt(ts)) % step) + step) % step === 0;
+  // The first boundary after t: under the offset in force at t, or under the
+  // one in force a step later (an offset change in between); a candidate
+  // counts only where its own instant is in that offset.
+  const next = (t: number): number => {
+    let best = Infinity;
+    const before = offsetAt(t);
+    const after = offsetAt(t + step);
+    for (const offset of before === after ? [before] : [before, after]) {
+      let c = Math.floor((t + offset) / step) * step + step - offset;
+      for (let tries = 0; tries < 4 && c < best; tries++, c += step) {
+        if (offsetAt(c) === offset) {
+          best = c;
+          break;
+        }
+      }
+    }
+    return best === Infinity ? t + step : best;
+  };
+  const ticks: number[] = [];
+  for (let ts = onBoundary(minTs) ? minTs : next(minTs); ts <= maxTs; ts = next(ts)) ticks.push(ts);
+  return ticks;
+}
+
+/**
  * The shared axis over N series: domain = union of every series' ts range
  * (ranges may overlap partially or not at all — a foreign series from a
  * different master is normal), ticks on clean UTC wall-clock boundaries.
@@ -260,10 +310,7 @@ export function timelineAxis(series: TimelineSeries[]): TimelineAxis | null {
       break;
     }
   }
-  const ticks: TimelineTick[] = [];
-  for (let ts = Math.ceil(minTs / step) * step; ts <= maxTs; ts += step) {
-    ticks.push({ ts, label: tickLabel(ts, step) });
-  }
+  const ticks: TimelineTick[] = alignedTicks(minTs, maxTs, step).map((ts) => ({ ts, label: tickLabel(ts, step) }));
   // A sub-step span may straddle no boundary at all — still state the time once.
   if (ticks.length === 0) ticks.push({ ts: minTs, label: tickLabel(minTs, step) });
   return { minTs, maxTs, stepMs: step, ticks };
@@ -352,7 +399,7 @@ export function seriesColumns(series: TimelineSeries): SeriesColumns {
   return cols;
 }
 
-/** One chart's running tally while buildTimeline walks the pool. */
+/** One chart's running tally while buildTimeline reads the pool. */
 interface ChartTally {
   metric: string;
   src: AttributedSample[];
@@ -367,67 +414,58 @@ interface ChartTally {
   breakdown: Record<string, number>;
 }
 
-/** Walk the pool ONCE for every chart: each Sample's vitals are read once,
- *  not once per metric. `byTs` is the pool stably sorted ascending by ts, so
- *  each chart's points come out in ts order, ties in pool order — exactly as
- *  filtering, then stably sorting, would give. */
-function tallyCharts(metricNames: string[], byTs: AttributedSample[]): ChartTally[] {
-  const tallies = metricNames.map(
-    (metric): ChartTally => ({
+/** Tally every chart over the pool, from the Sample index's columns: `order`
+ *  is the pool as index positions, stably sorted ascending by ts, and
+ *  `byTs[at]` is the Sample at order[at] — so each chart's points come out in
+ *  ts order, ties in pool order, exactly as filtering, then stably sorting,
+ *  would give. No Sample's record is read here. */
+function tallyCharts(
+  metricNames: string[],
+  index: SampleIndex,
+  order: Int32Array,
+  byTs: AttributedSample[],
+): ChartTally[] {
+  const metricIds = new Map(index.metrics.map((m, i) => [m, i]));
+  return metricNames.map((metric): ChartTally => {
+    const t: ChartTally = {
       metric,
       src: [],
-      pos: new Int32Array(byTs.length),
-      ts: new Float64Array(byTs.length),
-      value: new Float64Array(byTs.length),
+      pos: new Int32Array(order.length),
+      ts: new Float64Array(order.length),
+      value: new Float64Array(order.length),
       n: 0,
       carried: 0,
       coldStartCount: 0,
       breakdown: {},
-    }),
-  );
-  const byName = new Map(tallies.map((t) => [t.metric, t]));
-  // The k-th name of a record is checked against the k-th name of the last
-  // one first (records nearly always list their metrics in the same order).
-  const lastNames: string[] = [];
-  const lastTallies: Array<ChartTally | undefined> = [];
-  for (let at = 0; at < byTs.length; at++) {
-    const s = byTs[at]!;
-    const vitals = s.sample.vitals;
-    let k = 0;
-    for (const name in vitals) {
-      let t: ChartTally | undefined;
-      if (lastNames[k] === name) t = lastTallies[k];
-      else {
-        t = byName.get(name);
-        lastNames[k] = name;
-        lastTallies[k] = t;
-      }
-      k += 1;
-      if (t === undefined) continue;
-      const m = vitals[name];
-      if (m === undefined) continue; // present but undefined: not carried
-      t.carried += 1;
-      if (m.status === 'ok' && typeof m.value === 'number') {
-        // ts stays absolute epoch ms — the axis is wall-clock, never run-relative.
-        t.pos[t.n] = at;
-        t.ts[t.n] = s.sample.ts;
-        t.value[t.n] = m.value;
-        t.src.push(s);
-        if (s.coldStart === true) t.coldStartCount += 1;
-        t.n += 1;
-      } else {
-        // Non-ok is ABSENT from the plot — never a 0 — but counted for coverage.
-        const raw: unknown = m.status;
-        const status = typeof raw === 'string' && raw !== '' ? raw : 'invalid';
-        t.breakdown[status] = (t.breakdown[status] ?? 0) + 1;
+    };
+    const id = metricIds.get(metric);
+    if (id !== undefined) {
+      const codes = index.status[id]!;
+      const values = index.value[id]!;
+      for (let at = 0; at < order.length; at++) {
+        const p = order[at]!;
+        const code = codes[p]!;
+        if (code === CODE_NOT_CARRIED) continue;
+        t.carried += 1;
+        if (code === CODE_POOLED) {
+          // ts stays absolute epoch ms — the axis is wall-clock, never run-relative.
+          t.pos[t.n] = at;
+          t.ts[t.n] = index.ts[p]!;
+          t.value[t.n] = values[p]!;
+          t.src.push(byTs[at]!);
+          if (index.coldStart[p] === 1) t.coldStartCount += 1;
+          t.n += 1;
+        } else {
+          // Non-ok is ABSENT from the plot — never a 0 — but counted for coverage.
+          const status = index.statuses[code]!;
+          t.breakdown[status] = (t.breakdown[status] ?? 0) + 1;
+        }
       }
     }
-  }
-  for (const t of tallies) {
-    const notCarried = byTs.length - t.carried;
+    const notCarried = order.length - t.carried;
     if (notCarried > 0) t.breakdown[NOT_CARRIED] = notCarried;
-  }
-  return tallies;
+    return t;
+  });
 }
 
 function buildTimelineChart(tally: ChartTally, total: number): TimelineChart {
@@ -495,15 +533,21 @@ function buildTimelineChart(tally: ChartTally, total: number): TimelineChart {
  * the domain math never changes.
  */
 export function buildTimeline(samples: AttributedSample[], metricNames: string[]): TimelineView {
+  return fullTimeline(sampleIndex(samples), metricNames);
+}
+
+/** buildTimeline over every Sample of an index. */
+function fullTimeline(index: SampleIndex, metricNames: string[]): TimelineView {
+  const samples = index.samples;
   if (samples.length === 0) return { axis: null, charts: [] };
   // One stable sort by ts, shared by every chart: positions into `samples`,
   // ties in pool order (Array.prototype.sort is stable).
   const order = Int32Array.from(
-    Array.from({ length: samples.length }, (_, i) => i).sort((a, b) => samples[a]!.sample.ts - samples[b]!.sample.ts),
+    Array.from({ length: samples.length }, (_, i) => i).sort((a, b) => index.ts[a]! - index.ts[b]!),
   );
   const byTs = Array.from(order, (i) => samples[i]!);
-  const tallies = tallyCharts(metricNames, byTs);
-  timelineTallies.set(samples, { order, byTs, tallies });
+  const tallies = tallyCharts(metricNames, index, order, byTs);
+  timelineTallies.set(index, { order, tallies });
   return timelineFrom(tallies, byTs.length);
 }
 
@@ -512,44 +556,48 @@ function timelineFrom(tallies: ChartTally[], total: number): TimelineView {
   return { axis: timelineAxis(charts.flatMap((c) => c.series)), charts };
 }
 
-/** The tallies behind each Sample set's timeline, so a SUBSET's timeline (the
- *  exclude-failed variant) is derived by filtering them instead of walking
- *  every Sample's vitals again. A cache of derived data: the result is the
- *  same either way (test/timeline-canvas.test.ts pins it). */
-const timelineTallies = new WeakMap<
-  AttributedSample[],
-  { order: Int32Array; byTs: AttributedSample[]; tallies: ChartTally[] }
->();
+/** The tallies behind an index's full timeline, so a SUBSET's timeline (the
+ *  exclude-failed variant) is derived by filtering them instead of tallying
+ *  every Sample again. A cache of derived data: the result is the same either
+ *  way (test/timeline-canvas.test.ts pins it). */
+const timelineTallies = new WeakMap<SampleIndex, { order: Int32Array; tallies: ChartTally[] }>();
 
-/** buildTimeline(kept, metricNames), where `kept` is an order-preserving
- *  subset of `full`, from full's tallies when they exist. Filtering the full
- *  pool's stable ts order gives exactly the subset's stable ts order. A chart
- *  left with no ok point is re-tallied over the subset for its reason (its
- *  not-ok breakdown is not carried by the full tally's points). */
-function subsetTimeline(full: AttributedSample[], kept: AttributedSample[], metricNames: string[]): TimelineView {
-  const parent = timelineTallies.get(full);
-  if (parent === undefined || kept.length === 0) return buildTimeline(kept, metricNames);
-  // Where each of full's Samples sits in `kept` (-1: dropped) — `kept` is a
-  // subsequence of `full`, so one lockstep walk, no hashing.
-  const inKept = new Int32Array(full.length);
-  for (let i = 0, j = 0; i < full.length; i++) {
-    if (j < kept.length && full[i] === kept[j]) inKept[i] = j++;
-    else inKept[i] = -1;
+/** The timeline of the Samples at `positions` (ascending index positions;
+ *  `kept[k]` is the Sample at positions[k]), from the full timeline's tallies
+ *  when they exist. Filtering the full pool's stable ts order gives exactly
+ *  the subset's stable ts order. A chart left with no ok point is re-tallied
+ *  over the subset for its reason (its not-ok breakdown is not carried by the
+ *  full tally's points). */
+function subsetTimeline(
+  index: SampleIndex,
+  positions: Int32Array,
+  kept: AttributedSample[],
+  metricNames: string[],
+): TimelineView {
+  if (kept.length === 0) return { axis: null, charts: [] };
+  const parent = timelineTallies.get(index);
+  if (parent === undefined) {
+    // No full timeline to filter: tally the subset itself, in its ts order.
+    const order = Int32Array.from(Array.from(positions).sort((a, b) => index.ts[a]! - index.ts[b]!));
+    const byTs = Array.from(order, (p) => index.samples[p]!);
+    return timelineFrom(tallyCharts(metricNames, index, order, byTs), byTs.length);
   }
-  // Which of full's ts-ordered positions survive, and where to.
+  const isKept = new Uint8Array(index.samples.length);
+  for (let k = 0; k < positions.length; k++) isKept[positions[k]!] = 1;
+  // Which of the full ts-ordered positions survive, and where to.
   const moved = new Int32Array(parent.order.length);
-  const order: number[] = [];
+  const survivors: number[] = [];
   for (let i = 0; i < parent.order.length; i++) {
-    const k = inKept[parent.order[i]!]!;
-    moved[i] = k === -1 ? -1 : order.length;
-    if (k !== -1) order.push(k);
+    const p = parent.order[i]!;
+    moved[i] = isKept[p] === 1 ? survivors.length : -1;
+    if (isKept[p] === 1) survivors.push(p);
   }
-  const keptOrder = Int32Array.from(order);
-  const byTs = Array.from(keptOrder, (k) => kept[k]!);
+  const order = Int32Array.from(survivors);
+  const byTs = Array.from(order, (p) => index.samples[p]!);
   const byName = new Map(parent.tallies.map((t) => [t.metric, t]));
   const tallies = metricNames.map((metric): ChartTally => {
     const from = byName.get(metric);
-    if (from === undefined) return tallyCharts([metric], byTs)[0]!;
+    if (from === undefined) return tallyCharts([metric], index, order, byTs)[0]!;
     const t: ChartTally = {
       metric,
       src: [],
@@ -572,9 +620,8 @@ function subsetTimeline(full: AttributedSample[], kept: AttributedSample[], metr
       if (sample.coldStart === true) t.coldStartCount += 1;
       t.n += 1;
     }
-    return t.n === 0 ? tallyCharts([metric], byTs)[0]! : t;
+    return t.n === 0 ? tallyCharts([metric], index, order, byTs)[0]! : t;
   });
-  timelineTallies.set(kept, { order: keptOrder, byTs, tallies });
   return timelineFrom(tallies, byTs.length);
 }
 
@@ -780,16 +827,36 @@ function buildEngines(
 }
 
 /** A Route pool grouped by Test key, in first-seen order. Cheap: one key per
- *  Sample. Its size is the Route's testCount; buildTestGroups builds from it. */
-function groupByTest(pool: AttributedSample[], testKey: TestKeyOf): Map<string, AttributedSample[]> {
+ *  Sample, read from the index's Test-key column by the Sample's position
+ *  (`at[j]` is pool[j]'s). Its size is the Route's testCount; buildTestGroups
+ *  builds from it. */
+function groupByTest(pool: AttributedSample[], at: number[], keys: string[]): Map<string, AttributedSample[]> {
   const byTest = new Map<string, AttributedSample[]>();
-  for (const s of pool) {
-    const key = testKey(s);
+  for (let j = 0; j < pool.length; j++) {
+    const key = keys[at[j]!]!;
     const group = byTest.get(key);
-    if (group) group.push(s);
-    else byTest.set(key, [s]);
+    if (group) group.push(pool[j]!);
+    else byTest.set(key, [pool[j]!]);
   }
   return byTest;
+}
+
+/** Every indexed Sample's Test key under one key function, by position —
+ *  computed once per (index, key function), so the second variant groups by
+ *  reading it. A cache of derived data: testKey is pure. */
+const testKeyColumns = new WeakMap<SampleIndex, WeakMap<TestKeyOf, string[]>>();
+function testKeyColumn(index: SampleIndex, testKey: TestKeyOf): string[] {
+  let byFn = testKeyColumns.get(index);
+  if (byFn === undefined) {
+    byFn = new WeakMap();
+    testKeyColumns.set(index, byFn);
+  }
+  let keys = byFn.get(testKey);
+  if (keys === undefined) {
+    keys = index.samples.map(testKey);
+    byFn.set(testKey, keys);
+  }
+  return keys;
 }
 
 function buildTestGroups(
@@ -890,29 +957,52 @@ function buildHistograms(pool: AttributedSample[], metricNames: string[]): Histo
 
 /** Build the whole precomputed view from a ReportData. Pure.
  *  `testKey` defaults to a key function over `data.samples`; a variant over a
- *  subset passes the full Report's (testKeyFor) so group keys stay stable. */
-export function buildView(data: ReportData, testKey: TestKeyOf = testKeyFor(data.samples)): ReportView {
-  return viewOf(data, testKey, null);
+ *  subset passes the full Report's (testKeyFor) so group keys stay stable.
+ *  `index` is the columnar index of `data.samples` (sampleIndex), when the
+ *  caller already built it — the browser builds it once, at load, for both
+ *  variants; one over any other Sample set is not used. */
+export function buildView(
+  data: ReportData,
+  testKey: TestKeyOf = testKeyFor(data.samples),
+  index?: SampleIndex,
+): ReportView {
+  return viewOf(data, testKey, indexOf(data.samples, index), null);
 }
 
-/** buildView; `subsetOf`, when given, is the full Sample set data.samples was
- *  filtered from (in order), whose timeline tallies can be reused. */
-function viewOf(data: ReportData, testKey: TestKeyOf, subsetOf: AttributedSample[] | null): ReportView {
+/** `index` when it indexes exactly `samples`, else a new one. */
+function indexOf(samples: AttributedSample[], index: SampleIndex | undefined): SampleIndex {
+  return index !== undefined && index.samples === samples ? index : sampleIndex(samples);
+}
+
+/** buildView, from the index. `positions`, when given, are the index
+ *  positions data.samples was selected from (data.samples[k] is
+ *  index.samples[positions[k]]); null when data.samples is the whole index. */
+function viewOf(
+  data: ReportData,
+  testKey: TestKeyOf,
+  index: SampleIndex,
+  positions: Int32Array | null,
+): ReportView {
   const metricNames = metricNamesOf(data.routes);
   const sessionOrder = new Map<string, number>(data.sessions.map((s, i) => [s.sessionId, i]));
 
-  // The Route pools, matching aggregateRoutes' grouping exactly.
-  const pools = new Map<string, AttributedSample[]>();
-  for (const s of data.samples) {
-    const route = routeOfSample(s);
-    const pool = pools.get(route);
-    if (pool) pool.push(s);
-    else pools.set(route, [s]);
+  // The Route pools, matching aggregateRoutes' grouping exactly — by the
+  // index's Route column, in pool order.
+  const byRouteId: AttributedSample[][] = index.routes.map(() => []);
+  const atByRouteId: number[][] = index.routes.map(() => []);
+  for (let k = 0; k < data.samples.length; k++) {
+    const p = positions === null ? k : positions[k]!;
+    const r = index.routeId[p]!;
+    byRouteId[r]!.push(data.samples[k]!);
+    atByRouteId[r]!.push(p);
   }
+  const routeIds = new Map(index.routes.map((route, r) => [route, r]));
+  const keys = testKeyColumn(index, testKey);
 
   const routes: RouteView[] = data.routes.map((row) => {
-    const pool = pools.get(row.route) ?? [];
-    const byTest = groupByTest(pool, testKey);
+    const r = routeIds.get(row.route);
+    const pool = r === undefined ? [] : byRouteId[r]!;
+    const byTest = groupByTest(pool, r === undefined ? [] : atByRouteId[r]!, keys);
     const route: RouteView = {
       route: row.route,
       sampleCount: row.sampleCount,
@@ -943,9 +1033,9 @@ function viewOf(data: ReportData, testKey: TestKeyOf, subsetOf: AttributedSample
     totalSamples: data.samples.length,
     routes,
     timeline:
-      subsetOf === null
-        ? buildTimeline(data.samples, metricNames)
-        : subsetTimeline(subsetOf, data.samples, metricNames),
+      positions === null
+        ? fullTimeline(index, metricNames)
+        : subsetTimeline(index, positions, data.samples, metricNames),
   };
 }
 
@@ -976,34 +1066,43 @@ export function hasExcludedVariant(outcomes: OutcomeSummary): boolean {
 }
 
 /** The opt-out view, recomputed over excludeFailedExecutions(samples); null
- *  exactly when hasExcludedVariant is false. Pure. */
+ *  exactly when hasExcludedVariant is false. Pure. `index`: as buildView's —
+ *  the columnar index of the FULL `data.samples`, which the subset is
+ *  aggregated from without reading a Sample's record again. */
 export function buildExcludedView(
   data: ReportData,
   outcomes: OutcomeSummary,
   testKey: TestKeyOf = testKeyFor(data.samples),
+  index?: SampleIndex,
 ): ReportView | null {
   if (!hasExcludedVariant(outcomes)) return null;
-  const kept = excludeFailedExecutions(data.samples);
+  const full = indexOf(data.samples, index);
+  const positions = keptPositions(data.samples);
+  const kept = Array.from(positions, (p) => data.samples[p]!);
   return viewOf(
     {
       ...data,
       samples: kept,
-      // The kept Samples carry their flags from the FULL run — never re-marked
-      // over the subset, so a filtered-out Cold Start is a gap, not a promotion.
-      routes: aggregateRoutes(kept, { coldStartsPreMarked: true }),
+      // The kept Samples carry their flags from the FULL run (the index holds
+      // them) — never re-marked over the subset, so a filtered-out Cold Start
+      // is a gap, not a promotion.
+      routes: aggregateIndexed(full, positions),
     },
     testKey,
-    data.samples,
+    full,
+    positions,
   );
 }
 
 /** Build both views from one ReportData. Pure — the blob's raw data is never
  *  touched; each variant recomputes aggregates and timeline from its pool.
- *  One Test-key function, over the FULL Sample set, serves both variants. */
+ *  One Test-key function and one Sample index, over the FULL Sample set,
+ *  serve both variants. */
 export function buildReportVariants(data: ReportData): ReportVariants {
   const outcomes = summarizeOutcomes(data.samples, data.outcomes);
   const testKey = testKeyFor(data.samples);
-  const included = buildView(data, testKey);
-  const excluded = buildExcludedView(data, outcomes, testKey);
+  const index = sampleIndex(data.samples);
+  const included = buildView(data, testKey, index);
+  const excluded = buildExcludedView(data, outcomes, testKey, index);
   return { outcomes, included, excluded };
 }

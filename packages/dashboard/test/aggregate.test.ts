@@ -1,4 +1,4 @@
-// The aggregation model (issue #6) — the dashboard's central claim, done
+// The aggregation model — the dashboard's central claim, done
 // correctly. What is pinned here:
 //   - the percentile method: sorted[floor((n-1)*q)] — verified against the real
 //     50-Sample known answers (the arithmetic tests never skip);
