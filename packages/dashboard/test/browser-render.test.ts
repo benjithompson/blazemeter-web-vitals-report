@@ -2,7 +2,8 @@
 // blob, with the SAME view-model and markup code Node runs. What is pinned:
 //   - THE DRIFT GUARD: the view the browser builds (window.bzmVitals) deep-
 //     equals the one Node builds from the same ReportData — the included
-//     variant at load, the excluded one after the toggle's first flip;
+//     variant at load, the excluded one once built (at idle after first
+//     paint, E3) and after the toggle's first flip;
 //   - the DOM is exactly the markup Node renders with the same functions
 //     (test/helpers/rendered.ts), so the string assertions elsewhere
 //     (outcome-toggle, report-scale) are assertions on the rendered report;
@@ -11,7 +12,8 @@
 //     rides percent-encoded in the DOM;
 //   - the fallbacks: no DecompressionStream, a corrupt blob, and JavaScript
 //     off each leave the server-rendered p75 summary, with the reason stated;
-//   - hovering a batched timeline point shows that Navigation's tooltip.
+//   - hovering a timeline point (on the canvas since E3) shows that
+//     Navigation's tooltip.
 //
 // The browser cases skip with a reason when no Chromium is installed.
 
@@ -22,13 +24,13 @@ import { join } from 'node:path';
 import type { ExecutionStatus, TestIdentity } from 'bzm-vitals-format';
 import { assembleReportData, type EngineRecords, type ReportData } from '../src/report.js';
 import { renderHtml } from '../src/render.js';
-import { domKey, drillContentHtml, excludedVariantHtml, pointTip } from '../src/browser/views.js';
+import { domKey, drillContentHtml, excludedVariantHtml, pointTip, type ZoneChoice } from '../src/browser/views.js';
 import { UI_STRINGS as S } from '../src/ui-strings.js';
 import { buildReportVariants } from '../src/view-model.js';
 import { bundleBrowser } from '../scripts/build-browser.ts';
 import { BLOB_RE, inlineScript } from './helpers/blob.js';
 import { renderedHtml } from './helpers/rendered.js';
-import { appState, chromium, haveChromium, openReport, warnNoChromium, type Browser, type Page } from './helpers/browser.js';
+import { appState, chromium, haveChromium, openReport, until, warnNoChromium, type Browser, type Page } from './helpers/browser.js';
 
 warnNoChromium('browser-render.test.ts');
 
@@ -199,9 +201,11 @@ describe.skipIf(!haveChromium)('E1 — in Chromium: the browser renders what Nod
   });
 
   /** innerHTML of `selector`, and `markup` parsed and re-serialized by the
-   *  same browser — so the comparison is DOM-to-DOM, not quote style. */
+   *  same browser — so the comparison is DOM-to-DOM, not quote style. The
+   *  canvases' width/height attributes are the one thing the browser adds
+   *  (E3: their backing store, sized when the points are drawn). */
   async function domVsMarkup(page: Page, selector: string, markup: string): Promise<{ dom: string; expected: string }> {
-    return page.evaluate(
+    const out = await page.evaluate(
       ({ selector, markup }) => {
         const t = document.createElement('template');
         t.innerHTML = markup;
@@ -211,9 +215,16 @@ describe.skipIf(!haveChromium)('E1 — in Chromium: the browser renders what Nod
       },
       { selector, markup },
     );
+    return { ...out, dom: out.dom.replace(/(<canvas [^>]*?) width="\d+" height="\d+"/g, '$1') };
   }
 
-  it('THE DRIFT GUARD: the browser-built view deep-equals Node\'s — included at load, excluded after the toggle', async () => {
+  /** The zone the page renders its timeline in (its local zone, by default). */
+  async function pageZone(page: Page): Promise<ZoneChoice> {
+    const zone = await page.evaluate(() => window.bzmVitals!.zone!);
+    return { tz: zone.tz, localTz: zone.localTz };
+  }
+
+  it('THE DRIFT GUARD: the browser-built view deep-equals Node\'s — included at load, excluded once built (idle) and after the toggle', async () => {
     const { page, errors } = await openReport(browser, html, dir);
     try {
       expect(await appState(page)).toBe('ready');
@@ -225,16 +236,21 @@ describe.skipIf(!haveChromium)('E1 — in Chromium: the browser renders what Nod
             return JSON.stringify({ outcomes: v.outcomes, included: v.included, excluded: v.excluded ?? 'not built' });
           }),
         ) as Record<string, unknown>;
-      // At load: the excluded variant is not built yet — it is built on demand.
       const atLoad = await inBrowser();
-      expect(atLoad['excluded']).toBe('not built');
       expect(atLoad['outcomes']).toEqual(plain(node.outcomes));
       expect(atLoad['included']).toEqual(plain(node.included));
-      // The toggle's first flip builds it, from the same data and code.
+      // The excluded variant's VIEW is built in the browser once the page is
+      // idle after first paint (E3) — from the same data and code — but its
+      // markup only on the toggle's first flip: nothing is pre-rendered.
+      await until(page, () => window.bzmVitals!.variants.excluded !== undefined, null);
+      await expect(page.locator('#bzm-variant-excluded').innerHTML()).resolves.toBe('');
+      const idle = await inBrowser();
+      expect(node.excluded).not.toBeNull();
+      expect(idle['excluded']).toEqual(plain(node.excluded));
       await page.locator('#bzm-include-failed').uncheck();
       const flipped = await inBrowser();
-      expect(node.excluded).not.toBeNull();
       expect(flipped['excluded']).toEqual(plain(node.excluded));
+      await expect(page.locator('#bzm-variant-excluded section.timeline').count()).resolves.toBe(1);
       // And the browser's copy of the data IS the blob's.
       const blobData = JSON.parse(await page.evaluate(() => JSON.stringify(window.bzmVitals!.data)));
       expect(blobData).toEqual(plain(data));
@@ -248,7 +264,8 @@ describe.skipIf(!haveChromium)('E1 — in Chromium: the browser renders what Nod
     const { page, errors } = await openReport(browser, html, dir);
     try {
       const variants = buildReportVariants(data);
-      const atLoad = await domVsMarkup(page, '#bzm-app', renderedHtml(data, 'lazy'));
+      const zone = await pageZone(page);
+      const atLoad = await domVsMarkup(page, '#bzm-app', renderedHtml(data, 'lazy', zone));
       expect(atLoad.dom).toBe(atLoad.expected);
 
       // The drill-down is built on first expand — with Node's markup.
@@ -258,7 +275,7 @@ describe.skipIf(!haveChromium)('E1 — in Chromium: the browser renders what Nod
       const drill = await domVsMarkup(
         page,
         '#drill-inc-0 > td',
-        drillContentHtml(variants.included.routes[0]!, variants.included.metricNames),
+        drillContentHtml(variants.included.routes[0]!, variants.included.metricNames, 'lazy'),
       );
       expect(drill.dom).toBe(drill.expected);
       expect(drill.dom).toContain('class="test-group"');
@@ -273,7 +290,7 @@ describe.skipIf(!haveChromium)('E1 — in Chromium: the browser renders what Nod
       const excluded = await domVsMarkup(
         page,
         '#bzm-variant-excluded',
-        excludedVariantHtml(variants.excluded!, variants.included, 'lazy'),
+        excludedVariantHtml(variants.excluded!, variants.included, 'lazy', zone),
       );
       expect(excluded.dom).toBe(excluded.expected);
       expect(excluded.dom).toContain(S.excludedNote);

@@ -28,7 +28,7 @@ import {
 import { buildReportVariants } from '../src/view-model.js';
 import { renderHtml } from '../src/render.js';
 import { syntheticEngines } from './helpers/synthetic.js';
-import { appState, chromium, haveChromium, openReport, warnNoChromium } from './helpers/browser.js';
+import { appState, chromium, haveChromium, openReport, until, warnNoChromium } from './helpers/browser.js';
 
 const DEMO_MASTER = '82723459';
 // The repo-root cache that scripts/fetch-cache.ts fills (BZM_VITALS_CACHE_DIR still wins).
@@ -318,4 +318,133 @@ describe('report-scale E1 @slow: a 200k-Sample report', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  // E3 (issue #45): the timeline's points on a canvas, the drill-downs built
+  // on first expand at every level, the excluded variant's view built at idle.
+  // Recorded (this synthetic run, Chromium headless, one developer machine):
+  //   first paint: 472 elements / 707 nodes (the points: zero DOM nodes);
+  //   toggle, worst case (flipped the instant the report is ready, so the
+  //   click builds the excluded view, renders it and paints): ~0.38–0.45 s
+  //   (pre-E3: ~2.5 s); toggle after the idle-time build (the first flip
+  //   renders the variant's markup): ~50 ms; later flips: ~10 ms;
+  //   opened in ~1.9–2.4 s (pre-E3: ~3.4 s).
+  it.skipIf(!haveChromium)(
+    'E3: under 5k DOM nodes at first paint, a variant toggle under 500 ms, and a canvas point\'s tooltip on hover',
+    async () => {
+      const browser = await chromium.launch();
+      const dir = mkdtempSync(path.join(tmpdir(), 'bzm-e3-scale-'));
+      type Cold = { ms: number; builtBefore: boolean; elements: number; nodes: number };
+      try {
+        // 1. First paint, and the worst-case toggle, measured in the page: a
+        //    MutationObserver callback runs as a microtask right after the
+        //    report turns ready — ahead of any idle callback — so it counts
+        //    the DOM as first painted, then flips the toggle before the
+        //    excluded view is built: this click builds it, renders it, paints.
+        const cold = await openReport(browser, html, dir, {
+          timeout: 60_000,
+          before: (p) =>
+            p.addInitScript(() => {
+              const w = window as unknown as { __cold?: Cold };
+              const watch = new MutationObserver(() => {
+                const app = document.getElementById('bzm-app');
+                if (app?.getAttribute('data-bzm-state') !== 'ready') return;
+                watch.disconnect();
+                const walker = document.createTreeWalker(document, NodeFilter.SHOW_ALL);
+                let nodes = 0;
+                while (walker.nextNode()) nodes++;
+                const elements = document.getElementsByTagName('*').length;
+                const builtBefore = window.bzmVitals?.variants.excluded !== undefined;
+                const t0 = performance.now();
+                (document.getElementById('bzm-include-failed') as HTMLInputElement).click();
+                requestAnimationFrame(() =>
+                  setTimeout(() => {
+                    w.__cold = { ms: Math.round(performance.now() - t0), builtBefore, elements, nodes };
+                  }, 0),
+                );
+              });
+              // From the start: the report can turn ready before DOMContentLoaded.
+              watch.observe(document, { subtree: true, attributes: true, attributeFilter: ['data-bzm-state'] });
+            }),
+        });
+        await until(cold.page, () => (window as unknown as { __cold?: unknown }).__cold !== undefined, null);
+        const first = await cold.page.evaluate(() => (window as unknown as { __cold: Cold }).__cold);
+        expect(first.builtBefore).toBe(false);
+        await expect(cold.page.locator('#bzm-variant-excluded').isVisible()).resolves.toBe(true);
+        expect(cold.errors).toEqual([]);
+        await cold.page.close();
+
+        // 2. The usual case: the page has been idle a moment, so the excluded
+        //    view is built; the first flip renders its markup, later ones swap.
+        //    Click → the next frame painted.
+        const { page, errors } = await openReport(browser, html, dir, { timeout: 60_000 });
+        expect(await appState(page)).toBe('ready');
+        await until(page, () => window.bzmVitals?.variants.excluded !== undefined, null);
+        const flip = () =>
+          page.evaluate(async () => {
+            const box = document.getElementById('bzm-include-failed') as HTMLInputElement;
+            const t0 = performance.now();
+            box.click();
+            await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+            return Math.round(performance.now() - t0);
+          });
+        const settled = [await flip(), await flip(), await flip()];
+        const timings = await page.evaluate(() => window.bzmVitals?.timings);
+        console.log(
+          `[report-scale] E3 200k: first paint ${first.elements} elements / ${first.nodes} nodes; ` +
+            `toggle at ready (builds the excluded view) ${first.ms} ms; ` +
+            `after the idle build ${settled.join(' / ')} ms (render, swap, swap); ${JSON.stringify(timings)}`,
+        );
+        expect(first.nodes).toBeLessThan(5_000);
+        expect(first.elements).toBeLessThan(5_000);
+        expect(first.ms).toBeLessThan(500);
+        for (const ms of settled) expect(ms).toBeLessThan(500);
+        await expect(page.locator('#bzm-variant-excluded').isVisible()).resolves.toBe(true);
+
+        // Hover a canvas point in the visible (excluded) variant's LCP chart.
+        const at = await page.evaluate(() => {
+          const v = window.bzmVitals!.variants.excluded!;
+          const index = v.timeline.charts.findIndex((c) => c.metric === 'lcp');
+          const chart = v.timeline.charts[index]!;
+          const axis = v.timeline.axis!;
+          const p = chart.series[0]!.points.at(-1)!;
+          const x = 56 + ((p.ts - axis.minTs) / (axis.maxTs - axis.minTs)) * (1240 - 56 - 14);
+          const y = 12 + (1 - p.value / chart.yMax) * 120;
+          const svg = document.querySelector(`#bzm-variant-excluded svg.tl-front[data-chart="${index}"]`) as SVGSVGElement;
+          svg.scrollIntoView({ block: 'center' });
+          const screen = new DOMPoint(x, y).matrixTransform(svg.getScreenCTM()!);
+          return { x: screen.x, y: screen.y };
+        });
+        // Scrolled into view, the chart is painted (charts off screen wait for it).
+        const painted = await until(
+          page,
+          ({ x, y }) => {
+            const canvas = [...document.querySelectorAll<HTMLCanvasElement>('#bzm-variant-excluded canvas.tl-points')].find(
+              (c) => {
+                const b = c.getBoundingClientRect();
+                return x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+              },
+            );
+            if (!canvas || canvas.width === 0) return false;
+            const b = canvas.getBoundingClientRect();
+            const px = canvas
+              .getContext('2d')!
+              .getImageData(Math.round(((x - b.left) / b.width) * canvas.width), Math.round(((y - b.top) / b.height) * canvas.height), 1, 1);
+            return px.data[3]! > 0;
+          },
+          at,
+        );
+        expect(painted).toBe(true);
+        await page.mouse.move(at.x, at.y);
+        const tip = page.locator('#bzm-tip');
+        await expect(tip.isVisible()).resolves.toBe(true);
+        // One Navigation's tooltip: its time (local zone), value, Engine and URL.
+        expect(await tip.textContent()).toMatch(/^\d\d:\d\d:\d\d\.\d{3} \S+ · [\d,]+\u2009ms · us-west-1 #\d\nhttps:\/\/shop\.example\.com\//);
+        expect(errors).toEqual([]);
+      } finally {
+        await browser.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    90_000,
+  );
 });

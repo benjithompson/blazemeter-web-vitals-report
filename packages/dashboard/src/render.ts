@@ -203,9 +203,27 @@ const STYLE = `
 
   section.timeline figure.tl { margin: 0 0 1.1rem; }
   .tl figcaption { font-size: 0.78rem; font-weight: 600; color: var(--ink-2); margin-bottom: 0.25rem; }
-  .tl svg {
-    display: block; width: 100%; max-width: ${TL_W}px; height: auto;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  /* E3: three stacked layers — svg (axes) behind, canvas (points), svg (Cold
+     Starts, p75 label, hover target) in front — in one bordered box. */
+  .tl-plot {
+    position: relative; width: 100%; max-width: ${TL_W}px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  }
+  .tl-plot > svg.tl-back { display: block; width: 100%; height: auto; }
+  .tl-plot > canvas.tl-points, .tl-plot > svg.tl-front {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block;
+  }
+  .tl-plot > canvas.tl-points { pointer-events: none; }
+  .tl .tzlab { fill: var(--ink-2); font-size: 10px; font-weight: 600; }
+  .tl-zone {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 1rem;
+    font-size: 0.75rem; color: var(--ink-2); margin: 0.2rem 0 0.35rem;
+  }
+  .tl-zone label.toggle { cursor: pointer; color: var(--ink); user-select: none; }
+  button.more {
+    font: inherit; font-size: 0.78rem; color: var(--series-1); background: none;
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.6rem;
+    margin: 0.35rem 0 0; cursor: pointer;
   }
   .tl .grid { stroke: var(--grid); stroke-width: 1; }
   .tl .axisline { stroke: var(--baseline); stroke-width: 1; }
@@ -233,12 +251,6 @@ const STYLE = `
   .pt-s4 { fill: var(--cat-5); } .pt-s5 { fill: var(--cat-6); }
   .pt-s6 { fill: var(--cat-7); } .pt-s7 { fill: var(--cat-8); }
   .pt-legend-cold { fill: var(--ink-2); }
-  .tl .pts { fill: none; stroke-width: 8; stroke-linecap: round; }
-  .pts.pt-mono { stroke: var(--series-1); }
-  .pts.pt-s0 { stroke: var(--cat-1); } .pts.pt-s1 { stroke: var(--cat-2); }
-  .pts.pt-s2 { stroke: var(--cat-3); } .pts.pt-s3 { stroke: var(--cat-4); }
-  .pts.pt-s4 { stroke: var(--cat-5); } .pts.pt-s5 { stroke: var(--cat-6); }
-  .pts.pt-s6 { stroke: var(--cat-7); } .pts.pt-s7 { stroke: var(--cat-8); }
   .tl-legend {
     display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
     font-size: 0.75rem; color: var(--ink-2); margin: 0.35rem 0 0.85rem;

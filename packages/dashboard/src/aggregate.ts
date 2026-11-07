@@ -41,12 +41,91 @@ import type { AttributedOutcome, AttributedSample, SampleExecutionStatus } from 
  * aggregate makes small n visible. Nearest-rank and linear interpolation both
  * fail to reproduce the known-answer fixture's values. Decision: SPEC-HARDENING.md D7.
  */
-export function percentile(values: number[], q: number): number {
+export function percentile(values: ArrayLike<number>, q: number): number {
+  return percentiles(values, [q])[0]!;
+}
+
+/**
+ * Several percentiles of one value set, by the pinned method — the SAME
+ * values sorting would give (sorted[floor((n-1)*q)]), found by selection
+ * instead (E3): an in-place quickselect on one Float64Array copy, O(n) per
+ * percentile rather than a comparator sort per call. `qs` in any order; the
+ * input is never reordered. A NaN in the input (never in parsed data) falls
+ * back to a full typed sort, which orders NaN last.
+ */
+export function percentiles(values: ArrayLike<number>, qs: readonly number[]): number[] {
   if (values.length === 0) {
     throw new Error('percentile of zero values — callers must render coverage, not a number');
   }
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor((sorted.length - 1) * q)]!;
+  return percentilesInPlace(Float64Array.from(values), qs);
+}
+
+/** percentiles() over a scratch copy it may reorder. */
+function percentilesInPlace(a: Float64Array, qs: readonly number[]): number[] {
+  const n = a.length;
+  let hasNaN = false;
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== a[i]) {
+      hasNaN = true;
+      break;
+    }
+  }
+  const ks = qs.map((q) => Math.floor((n - 1) * q));
+  if (hasNaN) {
+    a.sort();
+    return ks.map((k) => a[k]!);
+  }
+  // Select in ascending k: after selecting k, everything right of it is >= a[k],
+  // so the next (larger) k is searched in [k, n) only.
+  const order = ks.map((k, i) => [k, i] as const).sort((x, y) => x[0] - y[0]);
+  const out = new Array<number>(ks.length);
+  let lo = 0;
+  for (const [k, i] of order) {
+    out[i] = selectKth(a, k, lo, n - 1);
+    lo = k;
+  }
+  return out;
+}
+
+/** The k-th smallest of a[lo..hi] (inclusive), partitioning `a` in place:
+ *  Hoare partitioning around a median-of-three pivot. Falls back to sorting
+ *  the remaining range if partitioning stops converging (adversarial input),
+ *  so the worst case stays O(n log n). */
+function selectKth(a: Float64Array, k: number, lo: number, hi: number): number {
+  let budget = 2 * Math.ceil(Math.log2(hi - lo + 2)) + 8;
+  while (hi > lo) {
+    if (budget-- === 0 || hi - lo < 16) {
+      const sorted = a.subarray(lo, hi + 1).sort();
+      return sorted[k - lo]!;
+    }
+    const mid = (lo + hi) >>> 1;
+    // Median of three, as the pivot value.
+    let x = a[lo]!;
+    let y = a[mid]!;
+    let z = a[hi]!;
+    if (x > y) [x, y] = [y, x];
+    if (y > z) [y, z] = [z, y];
+    if (x > y) [x, y] = [y, x];
+    const pivot = y;
+    let i = lo;
+    let j = hi;
+    while (i <= j) {
+      while (a[i]! < pivot) i++;
+      while (a[j]! > pivot) j--;
+      if (i <= j) {
+        const t = a[i]!;
+        a[i] = a[j]!;
+        a[j] = t;
+        i++;
+        j--;
+      }
+    }
+    // Now a[lo..j] <= pivot <= a[i..hi], and a[j+1..i-1] === pivot.
+    if (k <= j) hi = j;
+    else if (k >= i) lo = i;
+    else return a[k]!;
+  }
+  return a[k]!;
 }
 
 // Derive the Route for a Sample: format's routeOf, the ONE copy shared with the collector's
@@ -322,45 +401,97 @@ export function excludeFailedExecutions(samples: AttributedSample[]): Attributed
   );
 }
 
-function aggregateMetric(pool: AttributedSample[], name: string): MetricAggregate {
-  const okValues: number[] = [];
-  const breakdown: Record<string, number> = {};
-  for (const s of pool) {
-    const metric = s.sample.vitals[name];
-    if (metric === undefined) {
-      breakdown[NOT_CARRIED] = (breakdown[NOT_CARRIED] ?? 0) + 1;
-      continue;
-    }
-    // Closed status vocabulary: only exactly "ok" (with a real number) pools.
-    // A not-ok status is never pooled EVEN IF it carries a number, and an
-    // unrecognized status is not-ok (the parser rejects one; kept as a backstop).
-    if (metric.status === 'ok' && typeof metric.value === 'number') {
-      okValues.push(metric.value);
-    } else {
-      // The status is typed closed but arrives from the open parse path — it
-      // can be any runtime string (or worse). Bucket the unusable ones.
-      const raw: unknown = metric.status;
-      const status = typeof raw === 'string' && raw !== '' ? raw : 'invalid';
-      breakdown[status] = (breakdown[status] ?? 0) + 1;
-    }
-  }
+/** One metric's running tally over a pool (aggregatePool). */
+interface MetricTally {
+  okValues: number[];
+  /** Samples that carry the metric at all, ok or not. */
+  carried: number;
+  breakdown: Record<string, number>;
+}
 
-  const aggregate: MetricAggregate = {
-    p50: okValues.length > 0 ? percentile(okValues, 0.5) : null,
-    p75: okValues.length > 0 ? percentile(okValues, 0.75) : null,
-    p95: okValues.length > 0 ? percentile(okValues, 0.95) : null,
-    ok: okValues.length,
-    total: pool.length,
-    breakdown,
-  };
-  if (okValues.length === 0 && pool.length > 0) {
-    // The dominant reason, as data: highest count wins; ties break
-    // deterministically by name so the same input always says the same thing.
-    aggregate.reason = Object.entries(breakdown).sort(
-      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
-    )[0]![0];
+/** Every metric the pool carries, aggregated in ONE pass over the pool (E3):
+ *  each Sample's vitals are walked once, instead of once per metric name.
+ *  Metric names keep their first-seen order; a Sample missing a metric counts
+ *  toward its 'not-carried' — the same aggregates the per-metric walk gave. */
+function aggregatePool(pool: AttributedSample[]): Record<string, MetricAggregate> {
+  const tallies = new Map<string, MetricTally>();
+  // Records nearly always list their metrics in the same order, so the k-th
+  // name of this record is checked against the k-th name of the last one
+  // before falling back to the map (a string compare instead of a hash).
+  const lastNames: string[] = [];
+  const lastTallies: MetricTally[] = [];
+  for (const s of pool) {
+    const vitals = s.sample.vitals;
+    let k = 0;
+    for (const name in vitals) {
+      let tally: MetricTally;
+      if (lastNames[k] === name) tally = lastTallies[k]!;
+      else {
+        const known = tallies.get(name);
+        if (known === undefined) {
+          tally = { okValues: [], carried: 0, breakdown: {} };
+          tallies.set(name, tally);
+        } else tally = known;
+        lastNames[k] = name;
+        lastTallies[k] = tally;
+      }
+      k += 1;
+      const metric = vitals[name];
+      if (metric === undefined) continue; // present but undefined: not carried
+      tally.carried += 1;
+      // Closed status vocabulary: only exactly "ok" (with a real number) pools.
+      // A not-ok status is never pooled EVEN IF it carries a number, and an
+      // unrecognized status is not-ok (the parser rejects one; kept as a backstop).
+      if (metric.status === 'ok' && typeof metric.value === 'number') {
+        tally.okValues.push(metric.value);
+      } else {
+        // The status is typed closed but arrives from the open parse path — it
+        // can be any runtime string (or worse). Bucket the unusable ones.
+        const raw: unknown = metric.status;
+        const status = typeof raw === 'string' && raw !== '' ? raw : 'invalid';
+        tally.breakdown[status] = (tally.breakdown[status] ?? 0) + 1;
+      }
+    }
   }
-  return aggregate;
+  const metrics: Record<string, MetricAggregate> = {};
+  for (const [name, tally] of tallies) {
+    const { breakdown } = tally;
+    const okCount = tally.okValues.length;
+    const notCarried = pool.length - tally.carried;
+    if (notCarried > 0) breakdown[NOT_CARRIED] = notCarried;
+    // One copy, three selections.
+    const [p50, p75, p95] = okCount > 0 ? percentiles(tally.okValues, [0.5, 0.75, 0.95]) : [null, null, null];
+    const aggregate: MetricAggregate = {
+      p50: p50 ?? null,
+      p75: p75 ?? null,
+      p95: p95 ?? null,
+      ok: okCount,
+      total: pool.length,
+      breakdown,
+    };
+    if (okCount === 0 && pool.length > 0) {
+      // The dominant reason, as data: highest count wins; ties break
+      // deterministically by name so the same input always says the same thing.
+      aggregate.reason = Object.entries(breakdown).sort(
+        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+      )[0]![0];
+    }
+    metrics[name] = aggregate;
+  }
+  return metrics;
+}
+
+/** routeOf, memoized per Sample record: the Route is a pure function of the
+ *  record, and a 200k-Sample Report derives it for every Sample in every
+ *  variant (aggregateRoutes, and the view model's Route pools). */
+const routeCache = new WeakMap<object, string>();
+export function routeOfSample(s: AttributedSample): string {
+  let route = routeCache.get(s.sample);
+  if (route === undefined) {
+    route = routeOf(s.sample);
+    routeCache.set(s.sample, route);
+  }
+  return route;
 }
 
 /**
@@ -386,7 +517,7 @@ export function aggregateRoutes(
 
   const byRoute = new Map<string, AttributedSample[]>();
   for (const s of marked) {
-    const route = routeOf(s.sample);
+    const route = routeOfSample(s);
     const pool = byRoute.get(route);
     if (pool) pool.push(s);
     else byRoute.set(route, [s]);
@@ -394,11 +525,7 @@ export function aggregateRoutes(
 
   const rows: RouteRow[] = [];
   for (const [route, pool] of byRoute) {
-    const metricNames = new Set<string>();
-    for (const s of pool) for (const name of Object.keys(s.sample.vitals)) metricNames.add(name);
-
-    const metrics: Record<string, MetricAggregate> = {};
-    for (const name of metricNames) metrics[name] = aggregateMetric(pool, name);
+    const metrics = aggregatePool(pool);
 
     // null when nothing in the pool is identifiable — never a misleading 0.
     const coldStarts = pool.every((s) => s.coldStart === null)

@@ -22,6 +22,7 @@ import type { SessionSummary } from '../report.js';
 import type { ThresholdBand } from '../thresholds.js';
 import { UI_STRINGS as S } from '../ui-strings.js';
 import {
+  seriesColumns,
   xFraction,
   type EngineView,
   type HistogramView,
@@ -223,6 +224,22 @@ function histogramHtml(histo: HistogramView): string {
 //
 // The chart renderer walks chart.series — N series on the ONE shared axis —
 // so a foreign series later is one more loop iteration, not a rework.
+//
+// Three layers per chart (E3), stacked in one .tl-plot box:
+//   1. an SVG BEHIND: gridlines, tick labels, the zone label, the axis line
+//      and the p75 reference line;
+//   2. a <canvas>: the plain points (Navigations) — drawn by the browser
+//      (canvas.ts) from timelineGeometry, at the device pixel ratio. A
+//      200k-Sample Report draws a million points with ZERO DOM nodes for them;
+//   3. an SVG IN FRONT: the Cold Start diamonds (few: one per Engine per
+//      worker process, each with its own data-tip) and the p75 label.
+// The plain points' tooltip comes from a hit-test (timelineHit) over the
+// same geometry. The box carries the chart's text alternative (aria-label).
+//
+// Time zone (E3): tick labels, the zone label on the axis and the tooltips
+// read in a time zone the caller names — the viewer's local zone by default
+// in the browser, or UTC by the toggle. The model's ticks sit on clean UTC
+// boundaries; their labels are re-read here in the chosen zone.
 
 // Matches the body's content column (80rem minus padding), so at full width
 // the svg renders 1:1 and its 10px labels stay 10px — width:100% below that.
@@ -232,7 +249,12 @@ const TL_PR = 14;
 const TL_PT = 12; // top pad: p75 label headroom
 const TL_PLOT_H = 120;
 const TL_AXIS_H = 24;
-const TL_H = TL_PT + TL_PLOT_H + TL_AXIS_H;
+export const TL_H = TL_PT + TL_PLOT_H + TL_AXIS_H;
+/** A plain point's radius, in viewBox units. */
+export const TL_POINT_R = 4;
+
+/** The zone the times read in: an IANA name ('America/New_York') or 'UTC'. */
+export const UTC = 'UTC';
 
 function tlX(axis: TimelineAxis, ts: number): number {
   return TL_PL + xFraction(axis, ts) * (TL_W - TL_PL - TL_PR);
@@ -241,6 +263,90 @@ function tlX(axis: TimelineAxis, ts: number): number {
 function tlY(chart: TimelineChart, value: number): number {
   return TL_PT + (1 - value / chart.yMax) * TL_PLOT_H;
 }
+
+// ------------------------------------------------------- time-zone reading
+
+interface ZoneParts {
+  month: string;
+  day: string;
+  hour: string;
+  minute: string;
+  second: string;
+  ms: string;
+  zone: string;
+}
+
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function formatterFor(tz: string): Intl.DateTimeFormat {
+  let f = formatters.get(tz);
+  if (f === undefined) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      fractionalSecondDigits: 3,
+      timeZoneName: 'short',
+    });
+    formatters.set(tz, f);
+  }
+  return f;
+}
+
+/** The wall-clock reading of `ts` in `tz`. UTC is read straight off the ISO
+ *  string — exactly the model's labels; any other zone through Intl, by parts,
+ *  so the shape never depends on a locale's punctuation. */
+function zoneParts(ts: number, tz: string): ZoneParts {
+  if (tz === UTC) {
+    const iso = new Date(ts).toISOString();
+    return {
+      month: iso.slice(5, 7),
+      day: iso.slice(8, 10),
+      hour: iso.slice(11, 13),
+      minute: iso.slice(14, 16),
+      second: iso.slice(17, 19),
+      ms: iso.slice(20, 23),
+      zone: UTC,
+    };
+  }
+  const out: ZoneParts = { month: '', day: '', hour: '', minute: '', second: '', ms: '', zone: '' };
+  for (const part of formatterFor(tz).formatToParts(ts)) {
+    if (part.type === 'month') out.month = part.value;
+    else if (part.type === 'day') out.day = part.value;
+    else if (part.type === 'hour') out.hour = part.value;
+    else if (part.type === 'minute') out.minute = part.value;
+    else if (part.type === 'second') out.second = part.value;
+    else if (part.type === 'fractionalSecond') out.ms = part.value;
+    else if (part.type === 'timeZoneName') out.zone = part.value;
+  }
+  return out;
+}
+
+/** A tick's label in `tz`: HH:MM:SS, or MM-DD HH:MM on day-scale steps —
+ *  the model's resolution (TimelineAxis.stepMs), read in the chosen zone. */
+export function tickText(ts: number, stepMs: number, tz: string): string {
+  const p = zoneParts(ts, tz);
+  return stepMs >= 86_400_000
+    ? `${p.month}-${p.day} ${p.hour}:${p.minute}`
+    : `${p.hour}:${p.minute}:${p.second}`;
+}
+
+/** The zone's short name at `ts` — "UTC", "EST", "GMT+5:30" — for the axis. */
+export function zoneLabel(ts: number, tz: string): string {
+  return zoneParts(ts, tz).zone;
+}
+
+/** HH:MM:SS.mmm ZONE — a point's time in its tooltip. */
+function clockText(ts: number, tz: string): string {
+  const p = zoneParts(ts, tz);
+  return `${p.hour}:${p.minute}:${p.second}.${p.ms} ${p.zone}`;
+}
+
+// ---------------------------------------------------------- Engine colors
 
 /** Engine → categorical slot, in the API's session order — fixed, never cycled.
  *  Past the 8 palette slots, later Engines share the de-emphasis ink (and stay
@@ -253,36 +359,38 @@ function engineSlots(view: ReportView): Map<string, number> {
   return slots;
 }
 
-function slotClass(slot: number | undefined, multiEngine: boolean): string {
-  if (!multiEngine || slot === undefined || slot === -1) return 'pt-mono';
-  return `pt-s${slot}`;
+/** A point's color slot: 0–7 an Engine hue, -1 the single-series ink. */
+function pointSlot(sessionId: string | undefined, slots: Map<string, number>, multiEngine: boolean): number {
+  if (!multiEngine || sessionId === undefined) return -1;
+  return slots.get(sessionId) ?? -1;
 }
 
-/** A point marker: circle for a Sample, diamond for a Cold Start (a SHAPE, so
- *  the flag survives color-blindness and never depends on hue). null coldStart
- *  (legacy) draws a plain circle — the marker is never faked.
- *
- *  The hover text rides as data-tip — precomputed here, shown by the inline
- *  script's tooltip, which positions but never composes. (A native <title>
- *  alongside would double the tooltip.) */
-function tlMarker(x: number, y: number, cls: string, coldStart: boolean, tip: string): string {
-  const t = ` data-tip="${escapeHtml(tip)}"`;
+/** The CSS class for a slot — and the custom property the canvas reads it from. */
+export function slotClass(slot: number): string {
+  return slot === -1 ? 'pt-mono' : `pt-s${slot}`;
+}
+export function slotColorVar(slot: number): string {
+  return slot === -1 ? '--series-1' : `--cat-${slot + 1}`;
+}
+
+/** A Cold Start marker: a diamond (a SHAPE, so the flag survives color-
+ *  blindness and never depends on hue). Its hover text rides as data-tip —
+ *  precomputed here, shown by the inline script's tooltip, which positions
+ *  but never composes. (A native <title> alongside would double the tooltip.) */
+function coldMarker(x: number, y: number, cls: string, tip: string): string {
   const cx = x.toFixed(1);
   const cy = y.toFixed(1);
-  if (coldStart) {
-    const d = `M${cx},${(y - 6).toFixed(1)} L${(x + 6).toFixed(1)},${cy} L${cx},${(y + 6).toFixed(
-      1,
-    )} L${(x - 6).toFixed(1)},${cy} Z`;
-    return `<path class="pt cold ${cls}"${t} d="${d}"></path>`;
-  }
-  return `<circle class="pt ${cls}"${t} cx="${cx}" cy="${cy}" r="4"></circle>`;
+  const d = `M${cx},${(y - 6).toFixed(1)} L${(x + 6).toFixed(1)},${cy} L${cx},${(y + 6).toFixed(
+    1,
+  )} L${(x - 6).toFixed(1)},${cy} Z`;
+  return `<path class="pt cold ${cls}" data-tip="${escapeHtml(tip)}" d="${d}"></path>`;
 }
 
-/** A point's hover text: wall-clock time, value, Engine, Cold Start, URL. */
-export function pointTip(chart: TimelineChart, p: TimelinePoint): string {
-  const time = new Date(p.ts).toISOString().slice(11, 23);
+/** A point's hover text: wall-clock time (in `tz`), value, Engine, Cold
+ *  Start, URL. */
+export function pointTip(chart: TimelineChart, p: TimelinePoint, tz: string = UTC): string {
   return (
-    `${time} UTC · ${fmtValue(chart.metric, p.value)}` +
+    `${clockText(p.ts, tz)} · ${fmtValue(chart.metric, p.value)}` +
     (p.meta?.engineLabel ? ` · ${p.meta.engineLabel}` : '') +
     (p.meta?.coldStart === true ? ` · ${S.coldStartFlag}` : '') +
     (p.meta?.url ? `\n${p.meta.url}` : '')
@@ -290,41 +398,105 @@ export function pointTip(chart: TimelineChart, p: TimelinePoint): string {
 }
 
 function axisOf(view: ReportView): TimelineAxis {
-  return view.timeline.axis ?? { minTs: 0, maxTs: 0, ticks: [] };
+  return view.timeline.axis ?? { minTs: 0, maxTs: 0, stepMs: 1_000, ticks: [] };
 }
 
-/** Per chart, its points' svg coordinates in x order — built on first hover. */
-const hitIndex = new WeakMap<TimelineChart, { xs: Float64Array; ys: Float64Array; points: TimelinePoint[] }>();
+/** One chart's points in viewBox units, ordered by x — what the canvas draws
+ *  and the hit-test searches. Built once per chart (memoized), from the
+ *  series' columns: no point objects are materialized. */
+export interface TimelineGeometry {
+  xs: Float64Array;
+  ys: Float64Array;
+  /** Color slot per point (pointSlot). */
+  slots: Int8Array;
+  /** 1 where the point is a Cold Start — drawn as an SVG diamond, not here. */
+  cold: Uint8Array;
+  /** Which series, and which point in it, each entry is. */
+  series: Uint16Array;
+  index: Uint32Array;
+}
 
-/** The hover hit-test for the batched points: the tooltip text of the point
- *  nearest (svgX, svgY) — svg viewBox units — within `radius`, else null.
- *  Points are sorted by ts, so x is monotonic and a binary search bounds the
- *  scan to the radius-wide column. */
+const geometryCache = new WeakMap<TimelineChart, TimelineGeometry>();
+
+export function timelineGeometry(view: ReportView, chartIndex: number): TimelineGeometry | null {
+  const chart = view.timeline.charts[chartIndex];
+  if (chart === undefined) return null;
+  const cached = geometryCache.get(chart);
+  if (cached !== undefined) return cached;
+  const axis = axisOf(view);
+  const slotMap = engineSlots(view);
+  const cols = chart.series.map(seriesColumns);
+  const n = cols.reduce((sum, c) => sum + c.ts.length, 0);
+  // One series is already in ts (so x) order; several are merged by ts.
+  let order: Array<[number, number]> | null = null;
+  if (cols.length > 1) {
+    order = [];
+    cols.forEach((c, si) => {
+      for (let i = 0; i < c.ts.length; i++) order!.push([si, i]);
+    });
+    order.sort((a, b) => cols[a[0]]!.ts[a[1]]! - cols[b[0]]!.ts[b[1]]!);
+  }
+  const geo: TimelineGeometry = {
+    xs: new Float64Array(n),
+    ys: new Float64Array(n),
+    slots: new Int8Array(n),
+    cold: new Uint8Array(n),
+    series: new Uint16Array(n),
+    index: new Uint32Array(n),
+  };
+  // The x and y maps, inlined: x = a + b·ts, y = c + d·value (tlX, tlY).
+  const span = axis.maxTs - axis.minTs;
+  const plotW = TL_W - TL_PL - TL_PR;
+  const xb = span === 0 ? 0 : plotW / span;
+  const xa = span === 0 ? TL_PL + 0.5 * plotW : TL_PL - axis.minTs * xb;
+  const yd = -TL_PLOT_H / chart.yMax;
+  const yc = TL_PT + TL_PLOT_H;
+  let lastSession: string | undefined;
+  let lastSlot = -1;
+  for (let k = 0; k < n; k++) {
+    const si = order === null ? 0 : order[k]![0];
+    const i = order === null ? k : order[k]![1];
+    const c = cols[si]!;
+    geo.xs[k] = xa + c.ts[i]! * xb;
+    geo.ys[k] = yc + c.value[i]! * yd;
+    const session = c.sessionId(i);
+    if (k === 0 || session !== lastSession) {
+      lastSession = session;
+      lastSlot = pointSlot(session, slotMap, view.multiEngine);
+    }
+    geo.slots[k] = lastSlot;
+    geo.cold[k] = c.coldStart(i) === true ? 1 : 0;
+    geo.series[k] = si;
+    geo.index[k] = i;
+  }
+  geometryCache.set(chart, geo);
+  return geo;
+}
+
+/** The point at geometry entry `k`, as a TimelinePoint (for its tooltip). */
+function geometryPoint(chart: TimelineChart, geo: TimelineGeometry, k: number): TimelinePoint {
+  const cols = seriesColumns(chart.series[geo.series[k]!]!);
+  const i = geo.index[k]!;
+  const meta = cols.meta(i);
+  return meta === undefined ? { ts: cols.ts[i]!, value: cols.value[i]! } : { ts: cols.ts[i]!, value: cols.value[i]!, meta };
+}
+
+/** The hover hit-test for the canvas points: the tooltip text of the point
+ *  nearest (svgX, svgY) — viewBox units — within `radius`, else null. The
+ *  geometry is in x order, so a binary search bounds the scan to the
+ *  radius-wide column. */
 export function timelineHit(
   view: ReportView,
   chartIndex: number,
   svgX: number,
   svgY: number,
+  tz: string = UTC,
   radius = 6,
 ): string | null {
   const chart = view.timeline.charts[chartIndex];
-  if (chart === undefined) return null;
-  let index = hitIndex.get(chart);
-  if (index === undefined) {
-    const axis = axisOf(view);
-    const points = chart.series
-      .flatMap((series) => series.points)
-      .sort((a, b) => a.ts - b.ts);
-    const xs = new Float64Array(points.length);
-    const ys = new Float64Array(points.length);
-    points.forEach((p, i) => {
-      xs[i] = tlX(axis, p.ts);
-      ys[i] = tlY(chart, p.value);
-    });
-    index = { xs, ys, points };
-    hitIndex.set(chart, index);
-  }
-  const { xs, ys, points } = index;
+  const geo = timelineGeometry(view, chartIndex);
+  if (chart === undefined || geo === null) return null;
+  const { xs, ys } = geo;
   let lo = 0;
   let hi = xs.length;
   while (lo < hi) {
@@ -343,16 +515,30 @@ export function timelineHit(
       best = i;
     }
   }
-  return best === -1 ? null : pointTip(chart, points[best]!);
+  return best === -1 ? null : pointTip(chart, geometryPoint(chart, geo, best), tz);
+}
+
+/** The chart's text alternative: what it plots, over which span, its p75 and
+ *  its Cold Starts — the canvas itself says nothing to a screen reader. */
+function chartSummary(chart: TimelineChart, axis: TimelineAxis, tz: string): string {
+  const heading = metricHeading(chart.metric);
+  const span =
+    axis.ticks.length > 0
+      ? ` ${S.fromWord} ${clockText(axis.minTs, tz)} ${S.toWord} ${clockText(axis.maxTs, tz)}`
+      : '';
+  const p75 = chart.p75 === null ? '' : `; ${S.p75} ${fmtValue(chart.metric, chart.p75)}`;
+  const cold = chart.coldStartCount > 0 ? `; ${chart.coldStartCount} ${S.coldStartsSuffix}` : '';
+  return `${heading} — ${S.timelineChartAria}: ${chart.okCount} ${S.ofWord} ${chart.total} ${S.samplesWord}${span}${p75}${cold}`;
 }
 
 function timelineChartHtml(
+  view: ReportView,
   chart: TimelineChart,
   chartIndex: number,
-  axis: TimelineAxis,
   slots: Map<string, number>,
-  multiEngine: boolean,
+  tz: string,
 ): string {
+  const axis = axisOf(view);
   const heading = metricHeading(chart.metric);
   const coverage = `${chart.okCount} ${S.ofWord} ${chart.total} ${S.samplesWord}`;
 
@@ -379,8 +565,8 @@ function timelineChartHtml(
     })
     .join('');
 
-  // Vertical gridlines + wall-clock tick labels; edge labels clamp inward so
-  // nothing clips at the svg boundary.
+  // Vertical gridlines + wall-clock tick labels in the chosen zone; edge
+  // labels clamp inward so nothing clips at the svg boundary.
   const xGrid = axis.ticks
     .map((tick) => {
       const x = tlX(axis, tick.ts);
@@ -388,14 +574,18 @@ function timelineChartHtml(
       return (
         `<line class="grid" x1="${x.toFixed(1)}" y1="${TL_PT}" x2="${x.toFixed(1)}" y2="${baselineY}"></line>` +
         `<text class="xlab" text-anchor="${anchor}" x="${x.toFixed(1)}" y="${baselineY + 15}">${escapeHtml(
-          tick.label,
+          tickText(tick.ts, axis.stepMs, tz),
         )}</text>`
       );
     })
     .join('');
+  // The zone, ON the axis: under the y labels, level with the tick labels.
+  const zoneText = `<text class="tzlab" text-anchor="end" x="${TL_PL - 6}" y="${baselineY + 15}">${escapeHtml(
+    zoneLabel(axis.minTs, tz),
+  )}</text>`;
 
   // The run-level p75 reference line, labelled. The line sits UNDER the
-  // points; the label is drawn last (over them) with a surface halo so it
+  // points; the label is drawn in front of them with a surface halo so it
   // stays legible where the data crowds the right edge. Label flips below
   // the line when the line runs too close to the top edge.
   let refLine = '';
@@ -409,54 +599,43 @@ function timelineChartHtml(
     )}</text>`;
   }
 
-  // N series through one loop. Plain points are BATCHED (E1): one <path> per
-  // Engine hue, each point a zero-length subpath that the stroke's round cap
-  // draws as a dot — a handful of elements per chart at any Sample count,
-  // where one element per point made a 200k-Sample Report a million-node DOM.
-  // Their tooltip comes from a hit-test (timelineHit) instead of data-tip.
-  // Cold Starts (few: one per worker) stay individual diamonds with their own
-  // data-tip, drawn last so they sit on top.
-  const plainBySlot = new Map<string, string[]>();
+  // Cold Starts: individual diamonds in the front layer, each with its tip.
   const cold: string[] = [];
-  for (const series of chart.series) {
-    for (const p of series.points) {
-      const x = tlX(axis, p.ts);
-      const y = tlY(chart, p.value);
-      const cls = slotClass(
-        p.meta?.sessionId !== undefined ? slots.get(p.meta.sessionId) : undefined,
-        multiEngine,
-      );
-      if (p.meta?.coldStart === true) {
-        cold.push(tlMarker(x, y, cls, true, pointTip(chart, p)));
-        continue;
+  if (chart.coldStartCount > 0) {
+    for (const series of chart.series) {
+      const cols = seriesColumns(series);
+      for (let i = 0; i < cols.ts.length; i++) {
+        if (cols.coldStart(i) !== true) continue;
+        const meta = cols.meta(i);
+        const p: TimelinePoint =
+          meta === undefined ? { ts: cols.ts[i]!, value: cols.value[i]! } : { ts: cols.ts[i]!, value: cols.value[i]!, meta };
+        const cls = slotClass(pointSlot(cols.sessionId(i), slots, view.multiEngine));
+        cold.push(coldMarker(tlX(axis, p.ts), tlY(chart, p.value), cls, pointTip(chart, p, tz)));
       }
-      const d = `M${x.toFixed(1)} ${y.toFixed(1)}h0`;
-      const batch = plainBySlot.get(cls);
-      if (batch) batch.push(d);
-      else plainBySlot.set(cls, [d]);
     }
   }
-  const plain = [...plainBySlot].map(
-    ([cls, d]) => `<path class="pts ${cls}" d="${d.join('')}"></path>`,
-  );
 
   const unit = chart.unit === 'unitless' ? S.unitlessWord : chart.unit;
+  const viewBox = `0 0 ${TL_W} ${TL_H}`;
   return (
     `<figure class="tl">` +
     `<figcaption>${escapeHtml(heading)} <span class="muted">${escapeHtml(
       `${unit} · ${coverage}`,
     )}</span></figcaption>` +
-    `<svg viewBox="0 0 ${TL_W} ${TL_H}" data-chart="${chartIndex}" role="img" aria-label="${escapeHtml(
-      `${heading} — ${S.timelineChartAria}`,
-    )}">` +
+    `<div class="tl-plot" role="img" aria-label="${escapeHtml(chartSummary(chart, axis, tz))}">` +
+    `<svg class="tl-back" viewBox="${viewBox}" aria-hidden="true">` +
     yGrid +
     xGrid +
+    zoneText +
     `<line class="axisline" x1="${TL_PL}" y1="${baselineY}" x2="${plotRight}" y2="${baselineY}"></line>` +
     refLine +
-    plain.join('') +
+    `</svg>` +
+    `<canvas class="tl-points" data-chart="${chartIndex}" aria-hidden="true"></canvas>` +
+    `<svg class="tl-front" viewBox="${viewBox}" data-chart="${chartIndex}" aria-hidden="true">` +
     cold.join('') +
     refLabel +
     `</svg>` +
+    `</div>` +
     `</figure>`
   );
 }
@@ -472,14 +651,18 @@ function timelineLegendHtml(
   const contributing = new Set<string>();
   for (const chart of timeline.charts) {
     for (const series of chart.series) {
-      for (const p of series.points) if (p.meta?.sessionId !== undefined) contributing.add(p.meta.sessionId);
+      const cols = seriesColumns(series);
+      for (let i = 0; i < cols.ts.length && contributing.size < view.sessions.length; i++) {
+        const id = cols.sessionId(i);
+        if (id !== undefined) contributing.add(id);
+      }
     }
   }
   const entries: string[] = [];
   if (view.multiEngine) {
     for (const session of view.sessions) {
       if (!contributing.has(session.sessionId)) continue;
-      const cls = slotClass(slots.get(session.sessionId), true);
+      const cls = slotClass(pointSlot(session.sessionId, slots, true));
       entries.push(
         `<span class="key" title="${escapeHtml(session.sessionId)}">` +
           `<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><circle class="pt ${cls}" cx="6" cy="6" r="4.5"></circle></svg>` +
@@ -499,17 +682,36 @@ function timelineLegendHtml(
   return `<div class="tl-legend">${entries.join('')}</div>`;
 }
 
-function timelineHtml(view: ReportView): string {
+/** The time-zone line: which zone the times read in, and the UTC toggle.
+ *  `localTz` is the viewer's zone; `tz` the one in force. One checkbox per
+ *  variant's timeline (class, not id); the script keeps them in step. */
+function zoneControlHtml(tz: string, localTz: string): string {
+  const utc = tz === UTC;
+  const shown = utc ? S.tzShownUtc : `${S.tzShownLocal} ${localTz}`;
+  return (
+    `<div class="tl-zone">` +
+    `<span class="tz-shown">${escapeHtml(shown)}</span>` +
+    `<label class="toggle"><input type="checkbox" class="bzm-tz-utc"${utc ? ' checked' : ''}> ${escapeHtml(
+      S.tzUtcToggle,
+    )}</label>` +
+    `</div>`
+  );
+}
+
+/** The timeline section of one variant. `tz`: the zone in force; `localTz`:
+ *  the viewer's own (named beside the toggle). */
+export function timelineHtml(view: ReportView, tz: string = UTC, localTz: string = tz): string {
   const timeline = view.timeline;
   if (timeline.charts.length === 0) return ''; // zero Samples: the table already said so
   const slots = engineSlots(view);
   const charts = timeline.charts
-    .map((chart, i) => timelineChartHtml(chart, i, axisOf(view), slots, view.multiEngine))
+    .map((chart, i) => timelineChartHtml(view, chart, i, slots, tz))
     .join('');
   return (
     `<section class="timeline">` +
     `<h2>${escapeHtml(S.timelineHeading)}<span class="badge">${escapeHtml(S.labData)}</span></h2>` +
     `<p class="note">${escapeHtml(S.timelineNote)}</p>` +
+    zoneControlHtml(tz, localTz) +
     timelineLegendHtml(timeline, view, slots) +
     charts +
     `</section>`
@@ -558,23 +760,74 @@ function navigationRowHtml(nav: NavigationView, metricNames: string[]): string {
   );
 }
 
-function engineHtml(engine: EngineView, metricNames: string[], soloEngine: boolean): string {
-  const navHead =
+/** How a variant's drill-downs are emitted. 'lazy' (the browser): every level
+ *  — the Route's row, each Test, each Engine — is emitted closed and EMPTY,
+ *  and filled on its first expand (drillContentHtml, testGroupBodyHtml,
+ *  engineBodyHtml); an Engine's Navigation rows come NAV_CHUNK at a time. A
+ *  200k-Sample Report builds none of it until someone asks. A level that
+ *  opens by default (the only Test, the only Engine) is filled at once.
+ *  'eager': everything filled now (the tests, which assert on the content). */
+export type DrillMode = 'lazy' | 'eager';
+
+/** Navigation rows per "show more" step in a lazily built Engine. */
+export const NAV_CHUNK = 500;
+
+function navHeadHtml(metricNames: string[]): string {
+  return (
     `<tr><th>${escapeHtml(S.timeColumn)}</th><th class="url">${escapeHtml(S.urlColumn)}</th>` +
     metricNames.map((n) => `<th class="num">${escapeHtml(metricHeading(n))}</th>`).join('') +
-    `<th>${escapeHtml(S.outcomeColumn)}</th></tr>`;
+    `<th>${escapeHtml(S.outcomeColumn)}</th></tr>`
+  );
+}
+
+/** Navigation rows [from, to) of an Engine, for its table body. */
+export function navigationRowsHtml(engine: EngineView, metricNames: string[], from: number, to: number): string {
+  const navs = engine.navigations;
+  let html = '';
+  for (let i = from; i < Math.min(to, navs.length); i++) html += navigationRowHtml(navs[i]!, metricNames);
+  return html;
+}
+
+/** The "show more" button under a partly shown Navigation table, or ''. */
+export function moreNavigationsHtml(engine: EngineView, shown: number): string {
+  const total = engine.navigations.length;
+  if (shown >= total) return '';
+  const next = Math.min(NAV_CHUNK, total - shown);
+  return `<button class="more" data-shown="${shown}">${escapeHtml(
+    `${S.showWord} ${next} ${S.moreOfWord} ${total} ${S.navigationsHeading}`,
+  )}</button>`;
+}
+
+/** The inside of an Engine's <details>, after its summary: the Navigation
+ *  table — every row ('eager'), or the first NAV_CHUNK and a "show more". */
+export function engineBodyHtml(engine: EngineView, metricNames: string[], drills: DrillMode): string {
+  const shown = drills === 'eager' ? engine.navigations.length : Math.min(NAV_CHUNK, engine.navigations.length);
   return (
-    `<details class="engine" data-session-id="${escapeHtml(engine.sessionId)}"${
-      soloEngine ? ' open' : ''
-    }>` +
+    `<div class="table-scroll"><table class="navs"><thead>${navHeadHtml(metricNames)}</thead><tbody>` +
+    navigationRowsHtml(engine, metricNames, 0, shown) +
+    `</tbody></table></div>` +
+    moreNavigationsHtml(engine, shown)
+  );
+}
+
+function engineHtml(
+  engine: EngineView,
+  metricNames: string[],
+  soloEngine: boolean,
+  drills: DrillMode,
+  engineIndex: number,
+): string {
+  const fill = drills === 'eager' || soloEngine;
+  return (
+    `<details class="engine" data-session-id="${escapeHtml(engine.sessionId)}" data-ei="${engineIndex}"${
+      fill ? '' : ' data-lazy=""'
+    }${soloEngine ? ' open' : ''}>` +
     `<summary><span class="engine-label" title="${escapeHtml(engine.sessionId)}">${escapeHtml(
       engine.engineLabel,
     )}</span> — ${escapeHtml(nSamples(engine.sampleCount))} · ${escapeHtml(
       S.navigationsHeading,
     )}</summary>` +
-    `<div class="table-scroll"><table class="navs"><thead>${navHead}</thead><tbody>` +
-    engine.navigations.map((nav) => navigationRowHtml(nav, metricNames)).join('') +
-    `</tbody></table></div>` +
+    (fill ? engineBodyHtml(engine, metricNames, drills) : '') +
     `</details>`
   );
 }
@@ -618,25 +871,39 @@ function engineSpreadHtml(group: TestGroupView, metricNames: string[]): string {
   );
 }
 
-function testGroupHtml(group: TestGroupView, metricNames: string[], soloTest: boolean): string {
-  const label = group.legacy ? S.legacyTestGroup : group.label;
+/** The inside of a Test's <details>, after its summary: the Engine spread and
+ *  one (closed, lazily filled) <details> per Engine. */
+export function testGroupBodyHtml(
+  group: TestGroupView,
+  metricNames: string[],
+  soloTest: boolean,
+  drills: DrillMode,
+): string {
   const soloEngine = soloTest && group.engines.length === 1;
   return (
-    `<details class="test-group" data-test-key="${escapeHtml(domKey(group.key))}"${
-      soloTest ? ' open' : ''
-    }>` +
-    `<summary>${escapeHtml(label)} — ${escapeHtml(nSamples(group.sampleCount))}</summary>` +
     engineSpreadHtml(group, metricNames) +
-    group.engines.map((engine) => engineHtml(engine, metricNames, soloEngine)).join('') +
-    `</details>`
+    group.engines.map((engine, i) => engineHtml(engine, metricNames, soloEngine, drills, i)).join('')
   );
 }
 
-/** How a variant's drill-downs are emitted. 'lazy' (the browser): an empty
- *  row, filled with drillContentHtml on first expand — a 200k-Sample Report
- *  never builds its Navigation rows until someone asks. 'eager': filled now
- *  (the tests, which assert on the content). */
-export type DrillMode = 'lazy' | 'eager';
+function testGroupHtml(
+  group: TestGroupView,
+  metricNames: string[],
+  soloTest: boolean,
+  drills: DrillMode,
+  testIndex: number,
+): string {
+  const label = group.legacy ? S.legacyTestGroup : group.label;
+  const fill = drills === 'eager' || soloTest;
+  return (
+    `<details class="test-group" data-test-key="${escapeHtml(domKey(group.key))}" data-ti="${testIndex}"${
+      fill ? '' : ' data-lazy=""'
+    }${soloTest ? ' open' : ''}>` +
+    `<summary>${escapeHtml(label)} — ${escapeHtml(nSamples(group.sampleCount))}</summary>` +
+    (fill ? testGroupBodyHtml(group, metricNames, soloTest, drills) : '') +
+    `</details>`
+  );
+}
 
 /** The drill-down row id for Route `index` of the variant `idPrefix`. */
 export function drillId(idPrefix: string, index: number): string {
@@ -644,8 +911,8 @@ export function drillId(idPrefix: string, index: number): string {
 }
 
 /** The inside of one Route's drill-down row: blend note, histograms, the
- *  Test → Engine → Navigation groups. */
-export function drillContentHtml(route: RouteView, metricNames: string[]): string {
+ *  Test → Engine → Navigation groups (each level lazy in 'lazy' mode). */
+export function drillContentHtml(route: RouteView, metricNames: string[], drills: DrillMode = 'eager'): string {
   const blendNote = route.blended
     ? `<p class="blend-note">${escapeHtml(`${route.testCount} ${S.testsWord} — ${S.blendCaveat}`)}</p>`
     : '';
@@ -658,7 +925,7 @@ export function drillContentHtml(route: RouteView, metricNames: string[]): strin
   const soloTest = route.tests.length === 1;
   const tests =
     `<section><h3>${escapeHtml(S.testsHeading)}</h3>` +
-    route.tests.map((group) => testGroupHtml(group, metricNames, soloTest)).join('') +
+    route.tests.map((group, i) => testGroupHtml(group, metricNames, soloTest, drills, i)).join('') +
     `</section>`;
   return blendNote + histos + tests;
 }
@@ -674,7 +941,7 @@ function drillHtml(
   const lazy = drills === 'lazy';
   return (
     `<tr id="${drillId(idPrefix, index)}" class="drill"${lazy ? ' data-lazy=""' : ''} hidden>` +
-    `<td colspan="${colSpan}">${lazy ? '' : drillContentHtml(route, metricNames)}</td></tr>`
+    `<td colspan="${colSpan}">${lazy ? '' : drillContentHtml(route, metricNames, drills)}</td></tr>`
   );
 }
 
@@ -795,6 +1062,15 @@ function outcomeStripHtml(outcomes: OutcomeSummary, included: ReportView, enable
   );
 }
 
+/** The time zone the timeline reads in (`tz`: the viewer's local zone, or
+ *  UTC by the toggle) and the viewer's own zone (`localTz`, named beside the
+ *  toggle). Node renders UTC unless told otherwise. */
+export interface ZoneChoice {
+  tz: string;
+  localTz: string;
+}
+const UTC_ZONE: ZoneChoice = { tz: UTC, localTz: UTC };
+
 /** One variant: Route table + timeline. The excluded one opens by restating
  *  what it dropped, with the honest denominator. */
 export function variantHtml(
@@ -802,18 +1078,24 @@ export function variantHtml(
   idPrefix: string,
   note: string | null,
   drills: DrillMode,
+  zone: ZoneChoice = UTC_ZONE,
 ): string {
   return (
     (note === null ? '' : `<p class="excluded-note">${escapeHtml(note)}</p>`) +
     routeTableHtml(view, idPrefix, drills) +
-    timelineHtml(view)
+    timelineHtml(view, zone.tz, zone.localTz)
   );
 }
 
 /** The excluded variant's contents, for #bzm-variant-excluded. */
-export function excludedVariantHtml(excluded: ReportView, included: ReportView, drills: DrillMode): string {
+export function excludedVariantHtml(
+  excluded: ReportView,
+  included: ReportView,
+  drills: DrillMode,
+  zone: ZoneChoice = UTC_ZONE,
+): string {
   const note = `${S.excludedNote} — ${excluded.totalSamples} ${S.ofWord} ${included.totalSamples} ${S.samplesWord}`;
-  return variantHtml(excluded, 'exc', note, drills);
+  return variantHtml(excluded, 'exc', note, drills, zone);
 }
 
 export interface AppMarkupInput {
@@ -825,6 +1107,8 @@ export interface AppMarkupInput {
    *  whenever the toggle is live, and filled now only when this is given. */
   excluded?: ReportView | null;
   drills: DrillMode;
+  /** The timeline's time zone; UTC when absent. */
+  zone?: ZoneChoice;
 }
 
 /** The interactive report — what the browser puts in #bzm-app: the outcome
@@ -833,15 +1117,16 @@ export interface AppMarkupInput {
  *  "no samples" paragraph carries the section. */
 export function appHtml(input: AppMarkupInput): string {
   const { outcomes, included, drills } = input;
+  const zone = input.zone ?? UTC_ZONE;
   const withStrip = included.totalSamples > 0;
   const live = withStrip && input.toggleEnabled;
   const excluded = input.excluded ?? null;
   return (
     (withStrip ? outcomeStripHtml(outcomes, included, input.toggleEnabled) : '') +
-    `<div id="bzm-variant-included">${variantHtml(included, 'inc', null, drills)}</div>` +
+    `<div id="bzm-variant-included">${variantHtml(included, 'inc', null, drills, zone)}</div>` +
     (live
       ? `<div id="bzm-variant-excluded" hidden>${
-          excluded === null ? '' : excludedVariantHtml(excluded, included, drills)
+          excluded === null ? '' : excludedVariantHtml(excluded, included, drills, zone)
         }</div>`
       : '')
   );
