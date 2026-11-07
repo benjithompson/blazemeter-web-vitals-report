@@ -24,10 +24,20 @@ ungracefully emits no zip — a normal outcome, not an error).
 ### What it writes
 
 ```
-.artifact-cache/{masterId}/manifest.json     session list + per-Engine outcome
+.artifact-cache/{masterId}/manifest.json     session list + per-Engine outcome + master status
 .artifact-cache/{masterId}/{sessionId}.zip   raw fetched bytes
 .artifact-cache/{masterId}/{sessionId}/...    extracted, namespaced by sessionId
 ```
+
+The script writes to the repo root's `.artifact-cache/`. The CLI uses, in order:
+
+1. `--cache-dir <dir>`, when given;
+2. otherwise `$BZM_VITALS_CACHE_DIR`, when set;
+3. otherwise `./.artifact-cache` under the current directory.
+
+This is the same for the installed bin, a repo checkout and the single-file
+builds. (Earlier versions of the installed bin cached at the root of the project it was
+installed into; run from there, or pass `--cache-dir`, to reuse that cache.)
 
 Cross-Engine attachment basenames are **identical by construction** (basename is
 `sha1` of the fixed absolute path Taurus passes to every Engine), so extracting
@@ -36,10 +46,21 @@ Namespacing by `sessionId` is what prevents that.
 
 ### Re-running is cheap
 
-A second run against a cached master does **zero** network calls: the manifest is
-trusted and extraction re-runs from the cached raw zip. The raw bytes are cached
-alongside the extraction on purpose, so an extraction-logic change never forces a
-refetch. Delete `.artifact-cache/{masterId}/` to force a fresh fetch.
+A second run against a master that had **ENDED** when it was cached does
+**zero** network calls and needs no credentials: the manifest is trusted and
+extraction re-runs from the cached raw zip. The raw bytes are cached alongside
+the extraction on purpose, so an extraction-logic change never forces a
+refetch.
+
+A master cached while it was still running is not trusted: the next run lists
+its sessions again and fetches only the ones that are new, unfinished or
+changed. `--refresh` ignores the cache for that master and fetches every
+session again (so does deleting `.artifact-cache/{masterId}/`).
+
+Up to **4** Engines' artifacts download at once. Each zip and the manifest are
+written to a `.tmp` file and renamed into place, so a run killed mid-download
+leaves nothing a later run trusts. A cached zip that no longer reads (truncated
+or corrupt) is deleted and fetched again, with a warning.
 
 ## Local import — `--artifacts <path>`
 

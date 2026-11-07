@@ -56,7 +56,7 @@ export interface ApiOptions {
 const baseOf = (opts: ApiOptions) => opts.apiBase ?? resolveApiBase();
 
 interface StatusEnvelope {
-  result?: { sessions?: Array<Partial<SessionInfo>> };
+  result?: { status?: unknown; sessions?: Array<Partial<SessionInfo>> };
 }
 
 interface LogsEnvelope {
@@ -89,11 +89,14 @@ export async function getMaster(
   return { name: name ? String(name) : null };
 }
 
-/** GET /masters/{id}/status → the session list. Always returns every session. */
-export async function listSessions(
+/**
+ * GET /masters/{id}/status → the master's own status (ENDED, RUNNING, …; null
+ * when the API carries none) and every session.
+ */
+export async function getMasterStatus(
   masterId: string,
   opts: ApiOptions,
-): Promise<SessionInfo[]> {
+): Promise<{ status: string | null; sessions: SessionInfo[] }> {
   const transport = opts.transport ?? defaultTransport;
   const res = await transport(`${baseOf(opts)}/api/v4/masters/${masterId}/status`, {
     headers: { Authorization: basicAuthHeader(opts.creds) },
@@ -102,12 +105,24 @@ export async function listSessions(
     throw new Error(`GET /masters/${masterId}/status failed: ${res.status}`);
   }
   const body = (await res.json()) as StatusEnvelope;
+  const status = body.result?.status;
   const sessions = body.result?.sessions ?? [];
-  return sessions.map((s) => ({
-    id: String(s.id),
-    status: String(s.status ?? ''),
-    locationId: String(s.locationId ?? ''),
-  }));
+  return {
+    status: typeof status === 'string' && status !== '' ? status : null,
+    sessions: sessions.map((s) => ({
+      id: String(s.id),
+      status: String(s.status ?? ''),
+      locationId: String(s.locationId ?? ''),
+    })),
+  };
+}
+
+/** GET /masters/{id}/status → the session list. Always returns every session. */
+export async function listSessions(
+  masterId: string,
+  opts: ApiOptions,
+): Promise<SessionInfo[]> {
+  return (await getMasterStatus(masterId, opts)).sessions;
 }
 
 /**

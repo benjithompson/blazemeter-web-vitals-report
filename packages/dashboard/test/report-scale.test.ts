@@ -14,6 +14,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runCli } from '../src/cli.js';
 import { defaultCacheRoot } from '../src/cache.js';
 import { parseBlob } from './helpers/blob.js';
@@ -26,7 +27,9 @@ import {
 import { buildReportVariants } from '../src/view-model.js';
 
 const DEMO_MASTER = '82723459';
-const cacheRoot = defaultCacheRoot();
+// The repo-root cache that scripts/fetch-cache.ts fills (BZM_VITALS_CACHE_DIR still wins).
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+const cacheRoot = defaultCacheRoot({ cwd: REPO_ROOT });
 const cachePresent = existsSync(path.join(cacheRoot, DEMO_MASTER, 'manifest.json'));
 
 if (!cachePresent) {

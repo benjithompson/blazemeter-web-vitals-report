@@ -6,10 +6,12 @@
 //   BLAZEMETER_API_KEY=./api-key.json \
 //     npx tsx packages/dashboard/scripts/fetch-cache.ts <masterId> [<masterId> ...]
 //
-// Writes each Report's every Engine artifact into <repo>/.artifact-cache/{masterId}/,
-// extracted and namespaced by sessionId. The cache is gitignored and re-fetchable.
-// Re-running against a cached master does no network calls.
+// Writes each Report's every Engine artifact into <repo>/.artifact-cache/{masterId}/
+// (or $BZM_VITALS_CACHE_DIR/{masterId}/), extracted and namespaced by sessionId.
+// The cache is gitignored and re-fetchable. Re-running against a master cached
+// after it ENDED does no network calls.
 
+import { fileURLToPath } from 'node:url';
 import { loadCredentials } from '../src/http.js';
 import { cacheMaster, defaultCacheRoot } from '../src/cache.js';
 
@@ -21,7 +23,8 @@ async function main() {
   }
 
   const creds = await loadCredentials();
-  const cacheRoot = defaultCacheRoot();
+  // The repo root, wherever this is run from; BZM_VITALS_CACHE_DIR still wins.
+  const cacheRoot = defaultCacheRoot({ cwd: fileURLToPath(new URL('../../..', import.meta.url)) });
 
   for (const masterId of masterIds) {
     console.log(`\n=== master ${masterId} ===`);
