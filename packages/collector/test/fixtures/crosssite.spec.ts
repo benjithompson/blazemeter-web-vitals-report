@@ -41,7 +41,7 @@ test('Cross Site Link Click', async ({ page, vitals }) => {
   await expect(page.locator('h1')).toHaveText('Third');
 });
 
-// C7 (#46, re-verifying #13): the other ways a page leaves for another site on its own.
+// The other ways a page leaves for another site on its own.
 // None of them goes through goto(), so only the document's own beforeunload can flush.
 
 const firstSite = process.env.PW_BASE_URL ?? '';

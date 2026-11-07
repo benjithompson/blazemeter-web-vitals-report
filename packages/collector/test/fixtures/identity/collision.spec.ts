@@ -1,4 +1,4 @@
-// Fixture spec for C1 (#40): two describe blocks holding a test with the SAME title. On
+// Fixture spec for test identity: two describe blocks holding a test with the SAME title. On
 // (file, title, project) alone the two are indistinguishable: the collision that the
 // collector's test.id and test.titlePath must break.
 import { test, expect } from 'bzm-playwright-vitals';

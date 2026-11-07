@@ -1,21 +1,25 @@
-// E3 (issue #45) — canvas timeline, lazy drill-downs, local-time labels.
+// Canvas timeline, lazy drill-downs, local-time labels.
 //
 // What is pinned:
 //   - the speed-ups change no answer: percentiles by selection equal the
-//     pinned sorted method; the one-pass Route aggregation equals the
-//     per-metric walk; the exclude-failed view derived from the included
-//     one's timeline tallies deep-equals one built from scratch; the lazily
-//     built drill-down fields are real (accessors until first read);
+//     pinned sorted method; the Route aggregation over the columnar Sample
+//     index equals a per-metric walk of the records; the exclude-failed view
+//     derived from the included one's timeline tallies deep-equals one built
+//     from scratch, and neither build reads a Sample's vitals once the index
+//     exists; the lazily built drill-down fields are real (accessors until
+//     first read);
 //   - every drill-down level is emitted EMPTY in 'lazy' mode and filled on
 //     its first expand — Route, Test, Engine, and an Engine's Navigation rows
 //     NAV_CHUNK at a time;
-//   - the timeline reads in the viewer's local time zone, names the zone on
-//     the axis, and the UTC toggle re-reads it (Chromium with an emulated
-//     America/New_York zone);
+//   - the timeline reads in the viewer's local time zone, its ticks on round
+//     times in that zone (non-hour offsets and DST changes included), names
+//     the zone on the axis, and the UTC toggle re-reads it — and an Engine's
+//     Navigation rows with it (Chromium with an emulated America/New_York
+//     zone);
 //   - the plain points are painted on the canvas, crisp at devicePixelRatio
 //     2, and hovering one shows that Navigation's tooltip.
 // The 200k-Sample budgets (DOM size at first paint, toggle time) are in
-// report-scale.test.ts, next to E1's.
+// report-scale.test.ts, next to the report-size ones.
 //
 // The browser cases skip with a reason when no Chromium is installed.
 
@@ -32,6 +36,7 @@ import {
   percentile,
   percentiles,
   routeOf,
+  summarizeOutcomes,
   NOT_CARRIED,
   type MetricAggregate,
 } from '../src/aggregate.js';
@@ -39,16 +44,26 @@ import type { AttributedOutcome, AttributedSample } from '../src/attribute.js';
 import { assembleReportData, type ReportData } from '../src/report.js';
 import { renderHtml } from '../src/render.js';
 import {
+  axisTicks,
   drillContentHtml,
   engineBodyHtml,
   NAV_CHUNK,
+  navigationRowsHtml,
   pointTip,
   tickText,
   timelineHtml,
   zoneLabel,
 } from '../src/browser/views.js';
 import { UI_STRINGS as S } from '../src/ui-strings.js';
-import { buildReportVariants, buildView, seriesColumns, testKeyFor } from '../src/view-model.js';
+import {
+  buildExcludedView,
+  buildReportVariants,
+  buildView,
+  sampleIndex,
+  seriesColumns,
+  testKeyFor,
+  type ReportView,
+} from '../src/view-model.js';
 import { syntheticEngines } from './helpers/synthetic.js';
 import { appState, chromium, haveChromium, openReport, warnNoChromium, type Browser, type Page } from './helpers/browser.js';
 
@@ -176,8 +191,8 @@ describe('E3 — the faster model gives the same answers', () => {
   });
 
   it('the one-pass Route aggregation equals the per-metric walk it replaced', () => {
-    // The pre-E3 algorithm, verbatim in spirit: per Route, per metric name
-    // (first-seen order), one walk of the pool.
+    // A reference walk, the plainest correct one: per Route, per metric name
+    // (first-seen order), one walk of the pool's records.
     function reference(samples: AttributedSample[]): Map<string, Record<string, MetricAggregate>> {
       const pools = new Map<string, AttributedSample[]>();
       for (const s of samples) {
@@ -240,6 +255,39 @@ describe('E3 — the faster model gives the same answers', () => {
     const inp = excluded.timeline.charts.find((c) => c.metric === 'inp')!;
     expect(inp.okCount).toBe(0);
     expect(inp.reason).toBe('no-interaction');
+  });
+
+  it('both variants are built from one columnar Sample index: once it exists, neither build reads a Sample\'s vitals', () => {
+    // Every Sample's vitals behind a Proxy that counts reads; the index reads
+    // them once, at load, and the included and excluded builds read the index.
+    const base = fixture();
+    let reads = 0;
+    const counted = (vitals: Record<string, Metric>): Record<string, Metric> =>
+      new Proxy(vitals, {
+        get: (t, k, r) => (reads++, Reflect.get(t, k, r)),
+        has: (t, k) => (reads++, Reflect.has(t, k)),
+        ownKeys: (t) => (reads++, Reflect.ownKeys(t)),
+        getOwnPropertyDescriptor: (t, k) => (reads++, Reflect.getOwnPropertyDescriptor(t, k)),
+      });
+    const data: ReportData = {
+      ...base,
+      samples: base.samples.map((s) => ({ ...s, sample: { ...s.sample, vitals: counted(s.sample.vitals) } })),
+    };
+    const outcomes = summarizeOutcomes(data.samples, data.outcomes);
+    const testKey = testKeyFor(data.samples);
+    const index = sampleIndex(data.samples);
+    expect(reads).toBeGreaterThan(0);
+    reads = 0;
+    const included = buildView(data, testKey, index);
+    const excluded = buildExcludedView(data, outcomes, testKey, index);
+    // The landing view and the timeline (the drill-downs are built on first read).
+    plain({ routes: included.routes.map((r) => r.cells), timeline: included.timeline });
+    plain({ routes: excluded!.routes.map((r) => r.cells), timeline: excluded!.timeline });
+    expect(reads).toBe(0);
+    // Same answers as the builds without an index.
+    const reference = buildReportVariants(base);
+    expect(plain(included)).toEqual(plain(reference.included));
+    expect(plain(excluded)).toEqual(plain(reference.excluded));
   });
 
   it('drill-down contents and timeline points are built when first READ — and are the same data', () => {
@@ -359,6 +407,147 @@ describe('E3 — the timeline reads in a named time zone', () => {
     // The canvas and both svg layers are hidden from assistive tech: the box speaks.
     expect(html).toContain('<canvas class="tl-points" data-chart="');
     expect(html).not.toMatch(/<canvas(?![^>]*aria-hidden="true")/);
+  });
+});
+
+// ------------------------------------------- ticks aligned in the zone in force
+
+/** A one-Engine view whose Samples sit at exactly `tss`. */
+function viewAt(tss: number[]): ReportView {
+  const samples = markColdStarts(tss.map((ts, r) => sample('r-v4-e3-a', r, 'https://shop.example.com/cart', ts)));
+  return buildView({
+    masterId: '90000045',
+    reportName: null,
+    generatedAt: '2026-11-07T00:00:00.000Z',
+    sessions: [
+      {
+        sessionId: 'r-v4-e3-a',
+        locationId: 'us-west-1',
+        status: 'ENDED',
+        engineLabel: 'us-west-1 #1',
+        artifact: 'present',
+        sampleCount: samples.length,
+        outcomeCount: 0,
+        unreadable: [],
+      },
+    ],
+    routes: aggregateRoutes(samples),
+    samples,
+    outcomes: [],
+  });
+}
+
+/** The x-axis labels and the zone label of the first chart in `html`. */
+function axisText(html: string): { ticks: string[]; zone: string } {
+  const figure = html.split('<figure class="tl">')[1]!;
+  return {
+    ticks: [...figure.matchAll(/<text class="xlab"[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]!),
+    zone: /<text class="tzlab"[^>]*>([^<]*)<\/text>/.exec(figure)![1]!,
+  };
+}
+
+/** Is a tick label (HH:MM:SS, or MM-DD HH:MM) a whole multiple of `stepMs`
+ *  into its day — a round reading on the wall clock it is shown in? */
+function onBoundary(label: string, stepMs: number): boolean {
+  const m = /^(?:\d\d-\d\d )?(\d\d):(\d\d)(?::(\d\d))?$/.exec(label);
+  if (m === null) return false;
+  const ms = ((Number(m[1]) * 60 + Number(m[2])) * 60 + Number(m[3] ?? 0)) * 1000;
+  return ms % Math.min(stepMs, 86_400_000) === 0;
+}
+
+describe('the timeline\'s ticks sit on round times in the zone in force', () => {
+  // Offsets that are not whole hours (+5:30, -3:30, +5:45), whole-hour zones and UTC.
+  const zones = ['Asia/Kolkata', 'America/St_Johns', 'Asia/Kathmandu', 'America/New_York', 'Europe/Berlin', 'UTC'];
+  const spans = [77_000, 45 * 60_000, 3 * 3_600_000, 6 * 3_600_000, 30 * 3_600_000, 9 * 86_400_000];
+
+  it('every tick label is a whole step into the local day, for any offset and span', () => {
+    for (const span of spans) {
+      const view = viewAt([T0, T0 + span / 3, T0 + span]);
+      const axis = view.timeline.axis!;
+      for (const tz of zones) {
+        const { ticks } = axisText(timelineHtml(view, tz));
+        expect(ticks.length, `${tz}, ${span} ms`).toBeGreaterThanOrEqual(2);
+        for (const label of ticks) expect(onBoundary(label, axis.stepMs), `${tz}, ${span} ms: ${label}`).toBe(true);
+        // The ticks the labels belong to lie inside the axis domain, one step apart in local time.
+        for (const tick of axisTicks(axis, tz)) {
+          expect(tick.ts).toBeGreaterThanOrEqual(axis.minTs);
+          expect(tick.ts).toBeLessThanOrEqual(axis.maxTs);
+        }
+      }
+    }
+  });
+
+  it('an hour-step axis in Kolkata reads :00, not :30', () => {
+    const view = viewAt([T0, T0 + 6 * 3_600_000]);
+    expect(view.timeline.axis!.stepMs).toBe(3_600_000);
+    // 16:46:40Z is 22:16:40 IST: the first round hour is 23:00 IST (17:30Z).
+    expect(axisText(timelineHtml(view, 'Asia/Kolkata')).ticks).toEqual(['23:00:00', '00:00:00', '01:00:00', '02:00:00', '03:00:00', '04:00:00']);
+    expect(axisTicks(view.timeline.axis!, 'Asia/Kolkata')[0]!.ts).toBe(Date.parse('2026-11-07T17:30:00Z'));
+  });
+
+  it('UTC reads exactly the model\'s ticks', () => {
+    const axis = viewAt([T0, T0 + 30 * 3_600_000]).timeline.axis!;
+    expect(axisTicks(axis, 'UTC')).toEqual(axis.ticks);
+  });
+
+  it('a span across a DST change keeps local boundaries, and the axis names both zones', () => {
+    // New York falls back at 2026-11-01T06:00Z (02:00 EDT → 01:00 EST).
+    const fall = viewAt([Date.parse('2026-10-31T16:00:00Z'), Date.parse('2026-11-01T16:00:00Z')]);
+    expect(fall.timeline.axis!.stepMs).toBe(6 * 3_600_000);
+    const ny = axisText(timelineHtml(fall, 'America/New_York'));
+    expect(ny.ticks).toEqual(['12:00:00', '18:00:00', '00:00:00', '06:00:00']);
+    expect(ny.zone).toBe('EDT/EST');
+    // A zone with no change in the span names one zone.
+    expect(axisText(timelineHtml(fall, 'Asia/Kolkata')).zone).toBe('GMT+5:30');
+    expect(axisText(timelineHtml(fall, 'UTC')).zone).toBe('UTC');
+
+    // Hour steps through the repeated hour: every hour once, none skipped.
+    const hours = viewAt([Date.parse('2026-11-01T03:00:00Z'), Date.parse('2026-11-01T09:00:00Z')]);
+    const hourTicks = axisTicks(hours.timeline.axis!, 'America/New_York');
+    expect(hourTicks.map((t) => t.label)).toEqual(['23:00:00', '00:00:00', '01:00:00', '01:00:00', '02:00:00', '03:00:00', '04:00:00']);
+    expect(hourTicks.slice(1).map((t, i) => t.ts - hourTicks[i]!.ts).every((d) => d === 3_600_000)).toBe(true);
+
+    // Day steps across the spring change (2026-03-08) stay on local midnights.
+    const spring = viewAt([Date.parse('2026-03-03T12:00:00Z'), Date.parse('2026-03-12T12:00:00Z')]);
+    expect(spring.timeline.axis!.stepMs).toBe(86_400_000);
+    const days = axisText(timelineHtml(spring, 'America/New_York'));
+    expect(days.ticks).toEqual(['03-04', '03-05', '03-06', '03-07', '03-08', '03-09', '03-10', '03-11', '03-12'].map((d) => `${d} 00:00`));
+    expect(days.zone).toBe('EST/EDT');
+  });
+});
+
+// ------------------------------------- Navigation rows read in the zone in force
+
+describe('an Engine\'s Navigation rows read in the zone in force', () => {
+  const view = buildView(fixture());
+  const engine = view.routes.find((r) => r.route === '/checkout')!.tests[0]!.engines[0]!;
+
+  it('the time column\'s header names the zone, and each row reads in it', () => {
+    // The first Navigation is at T0: 16:46:40Z, 11:46:40 EST.
+    const local = engineBodyHtml(engine, view.metricNames, 'eager', 'America/New_York');
+    expect(local).toContain(`<th>${S.timeColumn} (EST)</th>`);
+    // (The first row is a Cold Start: its flag follows the time in the cell.)
+    expect(local).toMatch(/>11:46:40\.000[< ]/);
+    expect(local).not.toMatch(/>16:46:40\.000/);
+    const utc = engineBodyHtml(engine, view.metricNames, 'eager', 'UTC');
+    expect(utc).toContain(`<th>${S.timeColumn} (UTC)</th>`);
+    expect(utc).toMatch(/>16:46:40\.000[< ]/);
+    // UTC by default; the full ISO instant stays in the cell's title either way.
+    expect(engineBodyHtml(engine, view.metricNames, 'eager')).toBe(utc);
+    expect(local).toContain(`title="${new Date(T0).toISOString()}"`);
+    // The lazily added rows ("show more") read in the zone too.
+    expect(navigationRowsHtml(engine, view.metricNames, NAV_CHUNK, NAV_CHUNK + 1, 'Asia/Kolkata')).toContain(
+      `>${tickText(engine.navigations[NAV_CHUNK]!.ts, 1_000, 'Asia/Kolkata')}.`,
+    );
+  });
+
+  it('rows across a DST change carry their own zone, and the header names both', () => {
+    const dst = viewAt([Date.parse('2026-11-01T05:30:00Z'), Date.parse('2026-11-01T06:30:00Z')]);
+    const rows = dst.routes[0]!.tests[0]!.engines[0]!;
+    const html = engineBodyHtml(rows, dst.metricNames, 'eager', 'America/New_York');
+    expect(html).toContain(`<th>${S.timeColumn} (EDT/EST)</th>`);
+    expect(html).toMatch(/>01:30:00\.000 EDT[< ]/);
+    expect(html).toMatch(/>01:30:00\.000 EST[< ]/);
   });
 });
 
@@ -527,7 +716,7 @@ describe.skipIf(!haveChromium)('E3 — in Chromium (America/New_York, devicePixe
       await expect(checkout.locator('table.navs tbody tr').count()).resolves.toBe(BIG);
       await expect(checkout.locator('button.more').count()).resolves.toBe(0);
       // The rows are Node's rows, in order.
-      const expected = engineBodyHtml(view.routes[checkoutIndex]!.tests[0]!.engines[0]!, view.metricNames, 'eager');
+      const expected = engineBodyHtml(view.routes[checkoutIndex]!.tests[0]!.engines[0]!, view.metricNames, 'eager', 'America/New_York');
       const dom = await checkout.locator('details.engine').evaluate((d) => ({ rows: d.querySelector('tbody')!.innerHTML }));
       const expectedRows = await page.evaluate((markup) => {
         const t = document.createElement('template');
@@ -535,6 +724,64 @@ describe.skipIf(!haveChromium)('E3 — in Chromium (America/New_York, devicePixe
         return t.content.querySelector('tbody')!.innerHTML;
       }, expected);
       expect(dom.rows).toBe(expectedRows);
+    } finally {
+      await page.context().close();
+    }
+  }, 60_000);
+
+  it('Navigation rows follow the time-zone toggle: the rows shown, a lazily filled Engine\'s, and the "show more" ones', async () => {
+    const page = await open();
+    try {
+      const view = buildView(data);
+      const cartIndex = view.routes.findIndex((r) => r.route === '/cart');
+      const checkoutIndex = view.routes.findIndex((r) => r.route === '/checkout');
+      const checkoutEngine = view.routes[checkoutIndex]!.tests[0]!.engines[0]!;
+      const cartEngine = view.routes[cartIndex]!.tests[0]!.engines[0]!;
+      /** The DOM of an Engine's Navigation table, and `markup`'s, through the same parser. */
+      const tableVsMarkup = (engine: string, markup: string) =>
+        page.evaluate(
+          ({ engine, markup }) => {
+            const t = document.createElement('template');
+            t.innerHTML = markup;
+            const table = document.querySelector(engine)!.querySelector('table.navs')!;
+            return { dom: table.innerHTML, expected: t.content.querySelector('table.navs')!.innerHTML };
+          },
+          { engine, markup },
+        );
+      const checkoutSel = `#drill-inc-${checkoutIndex} details.engine`;
+      const cartSel = `#drill-inc-${cartIndex} details.test-group[data-ti="0"] details.engine[data-ei="0"]`;
+
+      // Local time first: /checkout's only Engine fills at once; one /cart Engine is opened.
+      await page.locator(`button[aria-controls="drill-inc-${checkoutIndex}"]`).click();
+      await page.locator(`button[aria-controls="drill-inc-${cartIndex}"]`).click();
+      await page.locator(`#drill-inc-${cartIndex} details.test-group[data-ti="0"] > summary`).click();
+      await page.locator(`${cartSel} > summary`).click();
+      await page.locator(`${cartSel} table.navs`).waitFor({ state: 'attached' });
+      const head = page.locator(`${checkoutSel} table.navs th`).first();
+      await expect(head.textContent()).resolves.toBe(`${S.timeColumn} (EST)`);
+      const first = page.locator(`${checkoutSel} table.navs tbody td.num`).first();
+      await expect(first.textContent()).resolves.toMatch(/^11:46:40\.000/);
+
+      // To UTC: every row already shown re-reads, in both Engines.
+      await page.locator('#bzm-variant-included input.bzm-tz-utc').check();
+      await expect(head.textContent()).resolves.toBe(`${S.timeColumn} (UTC)`);
+      await expect(first.textContent()).resolves.toMatch(/^16:46:40\.000/);
+      let cmp = await tableVsMarkup(checkoutSel, engineBodyHtml(checkoutEngine, view.metricNames, 'lazy', 'UTC'));
+      expect(cmp.dom).toBe(cmp.expected);
+      cmp = await tableVsMarkup(cartSel, engineBodyHtml(cartEngine, view.metricNames, 'lazy', 'UTC'));
+      expect(cmp.dom).toBe(cmp.expected);
+
+      // "Show more" adds rows in UTC; back to local time, all of them re-read.
+      await page.locator(`${checkoutSel} button.more`).click();
+      await expect(page.locator(`${checkoutSel} table.navs tbody tr`).count()).resolves.toBe(BIG);
+      cmp = await tableVsMarkup(checkoutSel, engineBodyHtml(checkoutEngine, view.metricNames, 'eager', 'UTC'));
+      expect(cmp.dom).toBe(cmp.expected);
+      await page.locator('#bzm-variant-included input.bzm-tz-utc').uncheck();
+      cmp = await tableVsMarkup(checkoutSel, engineBodyHtml(checkoutEngine, view.metricNames, 'eager', 'America/New_York'));
+      expect(cmp.dom).toBe(cmp.expected);
+      cmp = await tableVsMarkup(cartSel, engineBodyHtml(cartEngine, view.metricNames, 'lazy', 'America/New_York'));
+      expect(cmp.dom).toBe(cmp.expected);
+      await expect(head.textContent()).resolves.toBe(`${S.timeColumn} (EST)`);
     } finally {
       await page.context().close();
     }

@@ -1,4 +1,4 @@
-// D5 (#39) — lazy zip reading, and one in-memory pipeline.
+// Lazy zip reading, and one in-memory pipeline.
 //
 // A real artifacts.zip carries far more than records: video.webm, trace.zip,
 // the html-report twins. Only the record entries are worth inflating; the

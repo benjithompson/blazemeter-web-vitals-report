@@ -3,7 +3,8 @@
 //   1. reads the embedded data blob — the ReportData as gzip-compressed,
 //      base64-encoded JSON — and unpacks it with DecompressionStream('gzip');
 //   2. builds the view with the SAME view-model.ts code Node runs
-//      (buildView / buildExcludedView, one Test-key function for both);
+//      (buildView / buildExcludedView, one Test-key function and one
+//      columnar Sample index, built at load, for both);
 //   3. renders it with the SAME markup functions (views.ts) into #bzm-app,
 //      replacing the server-rendered fallback summary;
 //   4. wires the include-failed toggle (the excluded variant's view is
@@ -11,8 +12,9 @@
 //      toggle's first flip if that comes sooner — and rendered on that first
 //      flip; never pre-rendered on the server), the drill-downs
 //      (every level — Route, Test, Engine, Navigation rows — is built on its
-//      first expand), the timeline's canvas points (canvas.ts), its time-zone
-//      toggle (local by default, or UTC) and the tooltip.
+//      first expand), the timeline's canvas points (canvas.ts), the time-zone
+//      toggle (local by default, or UTC: the timeline and every Navigation
+//      row built so far re-read in the zone) and the tooltip.
 //
 // It fetches nothing: no fetch(), no XHR, no blob: or data: URL, no worker.
 // The CSP (render.ts) would block any of them anyway. If DecompressionStream
@@ -26,6 +28,7 @@ import {
   buildExcludedView,
   buildView,
   hasExcludedVariant,
+  sampleIndex,
   testKeyFor,
   type EngineView,
   type ReportView,
@@ -41,6 +44,7 @@ import {
   excludedVariantHtml,
   moreNavigationsHtml,
   NAV_CHUNK,
+  navigationHeadHtml,
   navigationRowsHtml,
   testGroupBodyHtml,
   timelineHit,
@@ -59,9 +63,9 @@ export interface BzmVitalsHandle {
   variants: Omit<ReportVariants, 'excluded'> & { excluded?: ReportView | null };
   /** Build (once) and return the excluded variant. */
   excluded(): ReportView | null;
-  /** Milliseconds per load phase (unpack, parse, view, render), the excluded
-   *  variant's view build once it is built (excludedView), and the canvas
-   *  drawing so far (draw) — diagnostics. */
+  /** Milliseconds per load phase (unpack, parse, the Sample index, view,
+   *  render), the excluded variant's view build once it is built
+   *  (excludedView), and the canvas drawing so far (draw) — diagnostics. */
   timings: Record<string, number>;
   /** The timeline's time zone in force, and the viewer's own. */
   zone?: ZoneChoice;
@@ -230,7 +234,10 @@ function wire(app: HTMLElement, handle: BzmVitalsHandle, zone: ZoneChoice): void
       const tbody = more.closest('details.engine')?.querySelector('table.navs > tbody');
       if (!at || !engine || !tbody) return;
       const shown = Number(more.getAttribute('data-shown'));
-      tbody.insertAdjacentHTML('beforeend', navigationRowsHtml(engine, at[0].metricNames, shown, shown + NAV_CHUNK));
+      tbody.insertAdjacentHTML(
+        'beforeend',
+        navigationRowsHtml(engine, at[0].metricNames, shown, shown + NAV_CHUNK, zone.tz),
+      );
       more.outerHTML = moreNavigationsHtml(engine, shown + NAV_CHUNK);
       return;
     }
@@ -243,7 +250,7 @@ function wire(app: HTMLElement, handle: BzmVitalsHandle, zone: ZoneChoice): void
     if (opening && row.hasAttribute('data-lazy')) {
       const cell = row.firstElementChild;
       const at = cell ? routeOf(cell) : null;
-      if (at && cell) cell.innerHTML = drillContentHtml(at[1], at[0].metricNames, 'lazy');
+      if (at && cell) cell.innerHTML = drillContentHtml(at[1], at[0].metricNames, 'lazy', zone.tz);
       row.removeAttribute('data-lazy');
     }
     if (opening) row.removeAttribute('hidden');
@@ -263,10 +270,10 @@ function wire(app: HTMLElement, handle: BzmVitalsHandle, zone: ZoneChoice): void
       let body = '';
       if (details.classList.contains('test-group')) {
         const group = testOf(details, route);
-        if (group) body = testGroupBodyHtml(group, view.metricNames, route.tests.length === 1, 'lazy');
+        if (group) body = testGroupBodyHtml(group, view.metricNames, route.tests.length === 1, 'lazy', zone.tz);
       } else if (details.classList.contains('engine')) {
         const engine = engineOf(details, route);
-        if (engine) body = engineBodyHtml(engine, view.metricNames, 'lazy');
+        if (engine) body = engineBodyHtml(engine, view.metricNames, 'lazy', zone.tz);
       }
       details.insertAdjacentHTML('beforeend', body);
     },
@@ -300,8 +307,10 @@ function wire(app: HTMLElement, handle: BzmVitalsHandle, zone: ZoneChoice): void
   }
 
   // The time-zone toggle (one checkbox per built timeline, kept in step):
-  // re-read the timelines in the other zone — axis labels, zone label,
-  // tooltips, text alternative — and redraw their points.
+  // re-read the timelines in the other zone — axis ticks and labels, zone
+  // label, tooltips, text alternative — and redraw their points; and re-read
+  // every Navigation table built so far (its header and the rows it shows,
+  // "show more" pages included). Rows built later read in the new zone.
   app.addEventListener('change', (e) => {
     const box = e.target;
     if (!(box instanceof HTMLInputElement) || !box.classList.contains('bzm-tz-utc')) return;
@@ -315,6 +324,14 @@ function wire(app: HTMLElement, handle: BzmVitalsHandle, zone: ZoneChoice): void
       if (!section || !view) continue;
       section.outerHTML = timelineHtml(view, zone.tz, zone.localTz);
       if (container) canvases.observe(container);
+    }
+    for (const table of app.querySelectorAll<HTMLTableElement>('details.engine table.navs')) {
+      const at = routeOf(table);
+      const engine = at ? engineOf(table, at[1]) : undefined;
+      const tbody = table.tBodies[0];
+      if (!at || !engine || !table.tHead || !tbody) continue;
+      table.tHead.innerHTML = navigationHeadHtml(engine, at[0].metricNames, zone.tz);
+      tbody.innerHTML = navigationRowsHtml(engine, at[0].metricNames, 0, tbody.rows.length, zone.tz);
     }
   });
 }
@@ -398,10 +415,14 @@ async function start(): Promise<void> {
     lap('unpack');
     const data = JSON.parse(json) as ReportData;
     lap('parse');
+    // ONE columnar Sample index over the FULL Sample set, for both variants:
+    // the only pass that reads every Sample's vitals.
+    const index = sampleIndex(data.samples);
+    lap('index');
     const outcomes = summarizeOutcomes(data.samples, data.outcomes);
     // ONE Test-key function over the FULL Sample set, for both variants.
     const testKey = testKeyFor(data.samples);
-    const included = buildView(data, testKey);
+    const included = buildView(data, testKey, index);
     lap('view');
     const handle: BzmVitalsHandle = {
       data,
@@ -410,7 +431,7 @@ async function start(): Promise<void> {
       excluded() {
         if (handle.variants.excluded === undefined) {
           const t0 = performance.now();
-          handle.variants.excluded = buildExcludedView(data, outcomes, testKey);
+          handle.variants.excluded = buildExcludedView(data, outcomes, testKey, index);
           timings['excludedView'] = Math.round(performance.now() - t0);
         }
         return handle.variants.excluded;

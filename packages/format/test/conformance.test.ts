@@ -85,7 +85,7 @@ async function fixtureJsonFiles(): Promise<string[]> {
 const FIXTURES = await fixtureJsonFiles();
 const isSampleFile = (f: string) => basename(f).includes('bzm-vitals-sample');
 const isOutcomeFile = (f: string) => basename(f).includes('bzm-vitals-outcome');
-/** Records C1 (#40) and later wrote: they carry test.id, titlePath and path. */
+/** Records from collectors that write test.id, titlePath and path (0.3.x on). */
 const isPostC1 = (f: string) => /[\\/]collector-0\.3\.x[\\/]/.test(f);
 
 /** The identity fields every record must or must not carry, by which collector wrote it. */
@@ -95,7 +95,7 @@ function expectIdentityFields(test: Json, f: string) {
     expect(Array.isArray(test.titlePath), f).toBe(true);
     expect(typeof test.path, f).toBe('string');
   } else {
-    expect('id' in test, f).toBe(false); // genuinely pre-C1 bytes
+    expect('id' in test, f).toBe(false); // bytes from a collector that writes no id
   }
 }
 

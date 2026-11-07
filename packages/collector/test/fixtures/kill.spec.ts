@@ -1,4 +1,4 @@
-// Fixture spec for issue #4 — the TRUE crash: the harness SIGKILLs the whole process
+// Fixture spec — the TRUE crash: the harness SIGKILLs the whole process
 // group mid-test, so no teardown runs anywhere. The Execution must leave its already-
 // flushed Samples and NO Outcome record — that absence IS the crash signal.
 import { test, expect } from 'bzm-playwright-vitals';

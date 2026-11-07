@@ -1,4 +1,4 @@
-// Fixture spec for issue #3 — the five-vitals journeys. Same rule as journey.spec.ts:
+// Fixture spec — the five-vitals journeys. Same rule as journey.spec.ts:
 // nothing here is collector-aware beyond the one changed import. The waits are what a
 // real tester writes anyway (assert what the user sees); they also make the harness's
 // CLS/INP assertions deterministic instead of a race against the flush.

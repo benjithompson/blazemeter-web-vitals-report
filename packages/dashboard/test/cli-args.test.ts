@@ -1,10 +1,8 @@
-// D2 (#31) — the command line is parsed by node:util parseArgs, strictly.
-//
-// The bug this replaces: the hand-rolled loop did `masterId = argv[++i]`, so a
-// trailing `--master` became `undefined` and `--master --out r.html` swallowed
-// `--out` as the master id. A malformed command line now exits 2 with ONE line
-// naming the problem plus a hint to use --help; `--help` / `--version` print
-// and exit 0 without touching the network or the filesystem.
+// The command line is parsed by node:util parseArgs, strictly: a trailing
+// `--master` has no value, and `--master --out r.html` must not take `--out`
+// as the master id. A malformed command line exits 2 with ONE line naming the
+// problem plus a hint to use --help; `--help` / `--version` print and exit 0
+// without touching the network or the filesystem.
 
 import { describe, it, expect } from 'vitest';
 import { execFile } from 'node:child_process';

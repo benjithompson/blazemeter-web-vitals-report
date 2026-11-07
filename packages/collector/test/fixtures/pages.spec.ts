@@ -1,4 +1,4 @@
-// Fixture spec — C6 (#42): every page the test opens in its context is measured, not
+// Fixture spec — every page the test opens in its context is measured, not
 // only the `page` fixture. A popup the page opens, a page the test adds with
 // context.newPage(), and a test that never touches `page` at all must all leave Samples,
 // each stamped with the pageIndex of the page it was measured on (0 = the context's

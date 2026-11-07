@@ -1,4 +1,4 @@
-// Issue #9 — outcome-aware states and the include-failed toggle.
+// Outcome-aware states and the include-failed toggle.
 //
 // The intuitive default is the harmful one: excluding failed Executions
 // deletes exactly the slowest Samples (the real 4 failures were CWV budget

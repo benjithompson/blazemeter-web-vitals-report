@@ -1,4 +1,4 @@
-// Seam 3 — issue #10: the format-drift guard.
+// Seam 3 — the format-drift guard.
 //
 // ONE cross-package test: the collector's REAL emitted files — produced by actual
 // Playwright child runs via the Seam 1 harness, never hand-authored — fed straight into

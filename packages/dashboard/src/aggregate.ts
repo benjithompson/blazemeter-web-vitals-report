@@ -397,89 +397,20 @@ export function summarizeOutcomes(
  * and excluding them biases every percentile faster, silently.
  */
 export function excludeFailedExecutions(samples: AttributedSample[]): AttributedSample[] {
-  return samples.filter(
-    (s) => s.executionStatus === undefined || !EXCLUDED_AS_FAILED.has(s.executionStatus),
-  );
+  return samples.filter(keptWhenExcludingFailed);
 }
 
-/** One metric's running tally over a pool (aggregatePool). */
-interface MetricTally {
-  okValues: number[];
-  /** Samples that carry the metric at all, ok or not. */
-  carried: number;
-  breakdown: Record<string, number>;
+/** Positions (into `samples`, ascending) of exactly the Samples
+ *  excludeFailedExecutions keeps — the same subset, as an index selection. */
+export function keptPositions(samples: readonly AttributedSample[]): Int32Array {
+  const out = new Int32Array(samples.length);
+  let n = 0;
+  for (let i = 0; i < samples.length; i++) if (keptWhenExcludingFailed(samples[i]!)) out[n++] = i;
+  return out.slice(0, n);
 }
 
-/** Every metric the pool carries, aggregated in ONE pass over the pool:
- *  each Sample's vitals are walked once, instead of once per metric name.
- *  Metric names keep their first-seen order; a Sample missing a metric counts
- *  toward its 'not-carried' — the same aggregates the per-metric walk gave. */
-function aggregatePool(pool: AttributedSample[]): Record<string, MetricAggregate> {
-  const tallies = new Map<string, MetricTally>();
-  // Records nearly always list their metrics in the same order, so the k-th
-  // name of this record is checked against the k-th name of the last one
-  // before falling back to the map (a string compare instead of a hash).
-  const lastNames: string[] = [];
-  const lastTallies: MetricTally[] = [];
-  for (const s of pool) {
-    const vitals = s.sample.vitals;
-    let k = 0;
-    for (const name in vitals) {
-      let tally: MetricTally;
-      if (lastNames[k] === name) tally = lastTallies[k]!;
-      else {
-        const known = tallies.get(name);
-        if (known === undefined) {
-          tally = { okValues: [], carried: 0, breakdown: {} };
-          tallies.set(name, tally);
-        } else tally = known;
-        lastNames[k] = name;
-        lastTallies[k] = tally;
-      }
-      k += 1;
-      const metric = vitals[name];
-      if (metric === undefined) continue; // present but undefined: not carried
-      tally.carried += 1;
-      // Closed status vocabulary: only exactly "ok" (with a real number) pools.
-      // A not-ok status is never pooled EVEN IF it carries a number, and an
-      // unrecognized status is not-ok (the parser rejects one; kept as a backstop).
-      if (metric.status === 'ok' && typeof metric.value === 'number') {
-        tally.okValues.push(metric.value);
-      } else {
-        // The status is typed closed but arrives from the open parse path — it
-        // can be any runtime string (or worse). Bucket the unusable ones.
-        const raw: unknown = metric.status;
-        const status = typeof raw === 'string' && raw !== '' ? raw : 'invalid';
-        tally.breakdown[status] = (tally.breakdown[status] ?? 0) + 1;
-      }
-    }
-  }
-  const metrics: Record<string, MetricAggregate> = {};
-  for (const [name, tally] of tallies) {
-    const { breakdown } = tally;
-    const okCount = tally.okValues.length;
-    const notCarried = pool.length - tally.carried;
-    if (notCarried > 0) breakdown[NOT_CARRIED] = notCarried;
-    // One copy, three selections.
-    const [p50, p75, p95] = okCount > 0 ? percentiles(tally.okValues, [0.5, 0.75, 0.95]) : [null, null, null];
-    const aggregate: MetricAggregate = {
-      p50: p50 ?? null,
-      p75: p75 ?? null,
-      p95: p95 ?? null,
-      ok: okCount,
-      total: pool.length,
-      breakdown,
-    };
-    if (okCount === 0 && pool.length > 0) {
-      // The dominant reason, as data: highest count wins; ties break
-      // deterministically by name so the same input always says the same thing.
-      aggregate.reason = Object.entries(breakdown).sort(
-        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
-      )[0]![0];
-    }
-    metrics[name] = aggregate;
-  }
-  return metrics;
+function keptWhenExcludingFailed(s: AttributedSample): boolean {
+  return s.executionStatus === undefined || !EXCLUDED_AS_FAILED.has(s.executionStatus);
 }
 
 /** routeOf, memoized per Sample record: the Route is a pure function of the
@@ -515,25 +446,250 @@ export function aggregateRoutes(
   opts: { coldStartsPreMarked?: boolean } = {},
 ): RouteRow[] {
   const marked = opts.coldStartsPreMarked ? samples : markColdStarts(samples);
+  return aggregateIndexed(sampleIndex(marked));
+}
 
-  const byRoute = new Map<string, AttributedSample[]>();
-  for (const s of marked) {
+// ------------------------------------------------- the columnar Sample index
+//
+// Every aggregate is a pure function of a few per-Sample facts: its Route, its
+// Cold Start flag, and per metric whether it was carried, ok (pooled, with a
+// value) or not-ok (with which status). The index holds exactly those, as
+// typed columns, read off each Sample's record ONCE. Aggregating any subset
+// of the Samples (the exclude-failed variant) then reads the columns, never
+// the records again. The answers are the per-record walk's, exactly:
+// test/timeline-canvas.test.ts pins them against a reference walk.
+
+/** A column's status codes: 0 = not carried, 1 = ok and pooled; any larger
+ *  code k is the not-ok status `statuses[k]`. */
+export const CODE_NOT_CARRIED = 0;
+export const CODE_POOLED = 1;
+
+export interface SampleIndex {
+  /** The indexed Samples: position i of every column is samples[i]. */
+  readonly samples: readonly AttributedSample[];
+  /** Each Sample's ts, absolute epoch ms. */
+  readonly ts: Float64Array;
+  /** Each Sample's Route, as a position in `routes`. */
+  readonly routeId: Int32Array;
+  readonly routes: readonly string[];
+  /** Each Sample's Cold Start flag: 1 true, 0 false (or not stamped), -1 null
+   *  (unidentifiable). */
+  readonly coldStart: Int8Array;
+  /** Every metric name any Sample carries, in first-seen order. */
+  readonly metrics: readonly string[];
+  /** Per metric (as in `metrics`), per Sample: its status code. */
+  readonly status: readonly Uint16Array[];
+  /** Per metric, per Sample: the value, where the code is 1 (pooled). */
+  readonly value: readonly Float64Array[];
+  /** The not-ok status names, by code (codes 0 and 1 are not names). */
+  readonly statuses: readonly string[];
+  /** Each Sample's metric-name order (the order its record lists its
+   *  vitals), as a position in `shapes` — so a pool's metrics keep the
+   *  first-seen order a walk of the records gives. */
+  readonly shapeId: Int32Array;
+  /** The distinct metric-name orders, as positions in `metrics`. */
+  readonly shapes: readonly Int32Array[];
+}
+
+/** Read every Sample's record once, into a SampleIndex. Pure. */
+export function sampleIndex(samples: readonly AttributedSample[]): SampleIndex {
+  const n = samples.length;
+  const ts = new Float64Array(n);
+  const routeId = new Int32Array(n);
+  const coldStart = new Int8Array(n);
+  const shapeId = new Int32Array(n);
+  const routes: string[] = [];
+  const routeIds = new Map<string, number>();
+  const metrics: string[] = [];
+  const metricIds = new Map<string, number>();
+  const status: Uint16Array[] = [];
+  const value: Float64Array[] = [];
+  const statuses: string[] = [NOT_CARRIED, 'ok'];
+  const statusCodes = new Map<string, number>();
+  const shapes: Int32Array[] = [];
+  const shapeIds = new Map<string, number>();
+
+  // Records nearly always list the same metrics in the same order: the k-th
+  // name is checked against the last record's k-th name before the map, and
+  // a record whose whole order matches the last one reuses its shape.
+  const lastNames: string[] = [];
+  const lastIds: number[] = [];
+  let lastLength = -1;
+  let lastShape = -1;
+  const ids: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const s = samples[i]!;
+    ts[i] = s.sample.ts;
     const route = routeOfSample(s);
-    const pool = byRoute.get(route);
-    if (pool) pool.push(s);
-    else byRoute.set(route, [s]);
+    let r = routeIds.get(route);
+    if (r === undefined) {
+      r = routes.length;
+      routes.push(route);
+      routeIds.set(route, r);
+    }
+    routeId[i] = r;
+    coldStart[i] = s.coldStart === true ? 1 : s.coldStart === null ? -1 : 0;
+
+    const vitals = s.sample.vitals;
+    let k = 0;
+    let sameShape = true;
+    for (const name in vitals) {
+      let id: number;
+      if (lastNames[k] === name) id = lastIds[k]!;
+      else {
+        sameShape = false;
+        let known = metricIds.get(name);
+        if (known === undefined) {
+          known = metrics.length;
+          metrics.push(name);
+          metricIds.set(name, known);
+          status.push(new Uint16Array(n));
+          value.push(new Float64Array(n));
+        }
+        id = known;
+        lastNames[k] = name;
+        lastIds[k] = id;
+      }
+      ids[k] = id;
+      k += 1;
+      const metric = vitals[name];
+      if (metric === undefined) continue; // present but undefined: not carried
+      // Closed status vocabulary: only exactly "ok" (with a real number) pools.
+      // A not-ok status is never pooled EVEN IF it carries a number, and an
+      // unrecognized status is not-ok (the parser rejects one; kept as a backstop).
+      if (metric.status === 'ok' && typeof metric.value === 'number') {
+        status[id]![i] = CODE_POOLED;
+        value[id]![i] = metric.value;
+      } else {
+        // The status is typed closed but arrives from the open parse path — it
+        // can be any runtime string (or worse). Bucket the unusable ones.
+        const raw: unknown = metric.status;
+        const label = typeof raw === 'string' && raw !== '' ? raw : 'invalid';
+        let code = statusCodes.get(label);
+        if (code === undefined) {
+          code = statuses.length;
+          statuses.push(label);
+          statusCodes.set(label, code);
+        }
+        status[id]![i] = code;
+      }
+    }
+    if (!sameShape || k !== lastLength) {
+      const key = ids.slice(0, k).join(',');
+      let shape = shapeIds.get(key);
+      if (shape === undefined) {
+        shape = shapes.length;
+        shapes.push(Int32Array.from(ids.slice(0, k)));
+        shapeIds.set(key, shape);
+      }
+      lastShape = shape;
+      lastLength = k;
+    }
+    shapeId[i] = lastShape;
+  }
+  return { samples, ts, routeId, routes, coldStart, metrics, status, value, statuses, shapeId, shapes };
+}
+
+/**
+ * aggregateRoutes over an index: the Samples at `positions` (ascending
+ * positions into index.samples; all of them when omitted), with the Cold
+ * Start flags the index holds — never re-marked over the subset (see
+ * coldStartsPreMarked). The same RouteRows aggregateRoutes gives for those
+ * Samples, read from the columns instead of the records.
+ */
+export function aggregateIndexed(index: SampleIndex, positions?: Int32Array): RouteRow[] {
+  const count = positions === undefined ? index.samples.length : positions.length;
+  const at = (k: number): number => (positions === undefined ? k : positions[k]!);
+  const routeCount = index.routes.length;
+  // Bucket the positions by Route, keeping their order (a counting sort).
+  const sizes = new Int32Array(routeCount);
+  for (let k = 0; k < count; k++) sizes[index.routeId[at(k)]!]! += 1;
+  const starts = new Int32Array(routeCount);
+  let largest = 0;
+  for (let r = 0, next = 0; r < routeCount; r++) {
+    starts[r] = next;
+    next += sizes[r]!;
+    if (sizes[r]! > largest) largest = sizes[r]!;
+  }
+  const members = new Int32Array(count);
+  const fill = starts.slice();
+  for (let k = 0; k < count; k++) {
+    const p = at(k);
+    members[fill[index.routeId[p]!]!++] = p;
   }
 
+  const scratch = new Float64Array(largest);
+  const shapeSeen = new Int32Array(index.shapes.length);
+  const metricSeen = new Int32Array(index.metrics.length);
   const rows: RouteRow[] = [];
-  for (const [route, pool] of byRoute) {
-    const metrics = aggregatePool(pool);
+  for (let r = 0; r < routeCount; r++) {
+    const size = sizes[r]!;
+    if (size === 0) continue;
+    const pool = members.subarray(starts[r]!, starts[r]! + size);
+    // The pool's metric names, in the order a walk of its records meets them.
+    const stamp = r + 1;
+    const order: number[] = [];
+    for (let j = 0; j < size; j++) {
+      const shape = index.shapeId[pool[j]!]!;
+      if (shapeSeen[shape] === stamp) continue;
+      shapeSeen[shape] = stamp;
+      for (const m of index.shapes[shape]!) {
+        if (metricSeen[m] === stamp) continue;
+        metricSeen[m] = stamp;
+        order.push(m);
+      }
+    }
+
+    const metrics: Record<string, MetricAggregate> = {};
+    for (const m of order) {
+      const codes = index.status[m]!;
+      const values = index.value[m]!;
+      const breakdown: Record<string, number> = {};
+      let ok = 0;
+      let carried = 0;
+      for (let j = 0; j < size; j++) {
+        const p = pool[j]!;
+        const code = codes[p]!;
+        if (code === CODE_NOT_CARRIED) continue;
+        carried += 1;
+        if (code === CODE_POOLED) scratch[ok++] = values[p]!;
+        else {
+          const label = index.statuses[code]!;
+          breakdown[label] = (breakdown[label] ?? 0) + 1;
+        }
+      }
+      const notCarried = size - carried;
+      if (notCarried > 0) breakdown[NOT_CARRIED] = notCarried;
+      // One scratch copy, three selections.
+      const [p50, p75, p95] =
+        ok > 0 ? percentilesInPlace(scratch.subarray(0, ok), [0.5, 0.75, 0.95]) : [null, null, null];
+      const aggregate: MetricAggregate = {
+        p50: p50 ?? null,
+        p75: p75 ?? null,
+        p95: p95 ?? null,
+        ok,
+        total: size,
+        breakdown,
+      };
+      if (ok === 0) {
+        // The dominant reason, as data: highest count wins; ties break
+        // deterministically by name so the same input always says the same thing.
+        aggregate.reason = Object.entries(breakdown).sort(
+          (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+        )[0]![0];
+      }
+      metrics[index.metrics[m]!] = aggregate;
+    }
 
     // null when nothing in the pool is identifiable — never a misleading 0.
-    const coldStarts = pool.every((s) => s.coldStart === null)
-      ? null
-      : pool.filter((s) => s.coldStart === true).length;
-
-    rows.push({ route, sampleCount: pool.length, coldStarts, metrics });
+    let identifiable = false;
+    let coldStarts = 0;
+    for (let j = 0; j < size; j++) {
+      const flag = index.coldStart[pool[j]!]!;
+      if (flag !== -1) identifiable = true;
+      if (flag === 1) coldStarts += 1;
+    }
+    rows.push({ route: index.routes[r]!, sampleCount: size, coldStarts: identifiable ? coldStarts : null, metrics });
   }
 
   // Busiest Route first, ties by Route name, so the ordering is stable run to run.

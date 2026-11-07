@@ -1,4 +1,4 @@
-// E1 (issue #43) — the report renders in the browser, from one embedded data
+// The report renders in the browser, from one embedded data
 // blob, with the SAME view-model and markup code Node runs. What is pinned:
 //   - THE DRIFT GUARD: the view the browser builds (window.bzmVitals) deep-
 //     equals the one Node builds from the same ReportData — the included
@@ -129,8 +129,9 @@ describe('E1 — one Test-key function serves both variants (D6 follow-up)', () 
       view.routes.find((r) => r.route === '/pay')!.tests.map((t) => t.key).sort();
     const included = keysOf(variants.included);
     const excluded = keysOf(variants.excluded!);
-    // z.spec.ts folds into z-id in BOTH variants. Built per variant (before
-    // E1), the excluded pool no longer saw z-id and keyed it on its triple.
+    // z.spec.ts folds into z-id in BOTH variants. The key function is built
+    // over the FULL Sample set because the excluded pool alone never sees
+    // z-id, and would key z.spec.ts on its triple.
     expect(included).toContain('\u0000id\u0000z-id');
     expect(excluded).toContain('\u0000id\u0000z-id');
     expect(excluded.every((k) => included.includes(k))).toBe(true);

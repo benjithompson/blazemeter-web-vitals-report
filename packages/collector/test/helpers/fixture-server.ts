@@ -2,9 +2,9 @@
 // the page the test drove, so the harness must serve real pages over HTTP — file:// URLs
 // distort TTFB (there is no response phase), which is exactly the metric under test.
 //
-// Reusable across issues #1/#3/#4/#10: the pages carry a contentful element (so FCP
-// fires), a couple of routes to navigate between, a clickable target (so #3 can reach
-// INP), and a layout-shifting element (so #3 can reach CLS).
+// Shared by every seam: the pages carry a contentful element (so FCP fires), a couple of
+// routes to navigate between, a clickable target (so the vitals seam can reach INP), and
+// a layout-shifting element (so it can reach CLS).
 
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -19,7 +19,7 @@ function page(title: string, body: string): string {
   <p><a href="/second">second</a> &middot; <a href="/third">third</a> &middot; <a href="/">home</a></p>
   <button id="target">click me</button>
   <script>
-    // A late layout shift so #3 has a non-zero CLS to measure. Harmless to the tracer.
+    // A late layout shift so the vitals seam has a non-zero CLS to measure. Harmless to the tracer.
     // Timed from FIRST PAINT, not from script start: content inserted before anything
     // was painted moves nothing, so the browser honestly reports no shift. (Measured on
     // Playwright 1.63 under parallel load: first paint can land 400ms+ after the script

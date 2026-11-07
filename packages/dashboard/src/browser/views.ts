@@ -22,6 +22,7 @@ import type { SessionSummary } from '../report.js';
 import type { ThresholdBand } from '../thresholds.js';
 import { UI_STRINGS as S } from '../ui-strings.js';
 import {
+  alignedTicks,
   seriesColumns,
   xFraction,
   type EngineView,
@@ -35,6 +36,7 @@ import {
   type TimelineAxis,
   type TimelineChart,
   type TimelinePoint,
+  type TimelineTick,
   type TimelineView,
 } from '../view-model.js';
 
@@ -236,10 +238,13 @@ function histogramHtml(histo: HistogramView): string {
 // The plain points' tooltip comes from a hit-test (timelineHit) over the
 // same geometry. The box carries the chart's text alternative (aria-label).
 //
-// Time zone: tick labels, the zone label on the axis and the tooltips
-// read in a time zone the caller names — the viewer's local zone by default
-// in the browser, or UTC by the toggle. The model's ticks sit on clean UTC
-// boundaries; their labels are re-read here in the chosen zone.
+// Time zone: ticks, tick labels, the zone label on the axis, the tooltips and
+// an Engine's Navigation rows read in a time zone the caller names — the
+// viewer's local zone by default in the browser, or UTC by the toggle. The
+// model's ticks sit on clean UTC boundaries; here the same step is placed on
+// the chosen zone's boundaries (axisTicks), so an hour step reads 23:00 IST,
+// never 22:30. Where the span crosses an offset change, the zone label names
+// both zones ("EDT/EST").
 
 // Matches the body's content column (80rem minus padding), so at full width
 // the svg renders 1:1 and its 10px labels stay 10px — width:100% below that.
@@ -324,6 +329,54 @@ function zoneParts(ts: number, tz: string): ZoneParts {
     else if (part.type === 'timeZoneName') out.zone = part.value;
   }
   return out;
+}
+
+const offsetFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** `tz`'s offset from UTC at `ts`, ms (whole seconds): its wall-clock reading
+ *  of ts, as if it were UTC, minus ts. */
+function offsetAt(ts: number, tz: string): number {
+  if (tz === UTC) return 0;
+  let f = offsetFormatters.get(tz);
+  if (f === undefined) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    offsetFormatters.set(tz, f);
+  }
+  const at: Record<string, number> = {};
+  for (const part of f.formatToParts(ts)) if (part.type !== 'literal') at[part.type] = Number(part.value);
+  const wall = Date.UTC(at['year']!, at['month']! - 1, at['day']!, at['hour']! % 24, at['minute']!, at['second']!);
+  return wall - Math.floor(ts / 1000) * 1000;
+}
+
+/** The axis's ticks in `tz`: the model's step, on `tz`'s wall-clock
+ *  boundaries (alignedTicks), labelled in `tz`. UTC: the model's ticks. */
+export function axisTicks(axis: TimelineAxis, tz: string): TimelineTick[] {
+  if (tz === UTC) return axis.ticks;
+  const step = axis.stepMs;
+  let tss = axis.minTs === axis.maxTs ? [axis.minTs] : alignedTicks(axis.minTs, axis.maxTs, step, (ts) => offsetAt(ts, tz));
+  // A sub-step span may straddle no boundary at all — still state the time once.
+  if (tss.length === 0) tss = [axis.minTs];
+  return tss.map((ts) => ({ ts, label: tickText(ts, step, tz) }));
+}
+
+/** The zone's short names over [fromTs, toTs], in time order, joined by "/":
+ *  "EST", or "EDT/EST" across a change. Read at both ends and at `between`. */
+function zoneSpanLabel(fromTs: number, toTs: number, tz: string, between: readonly number[] = []): string {
+  const names: string[] = [];
+  for (const ts of [fromTs, ...between, toTs]) {
+    const name = zoneLabel(ts, tz);
+    if (!names.includes(name)) names.push(name);
+  }
+  return names.join('/');
 }
 
 /** A tick's label in `tz`: HH:MM:SS, or MM-DD HH:MM on day-scale steps —
@@ -531,13 +584,27 @@ function chartSummary(chart: TimelineChart, axis: TimelineAxis, tz: string): str
   return `${heading} — ${S.timelineChartAria}: ${chart.okCount} ${S.ofWord} ${chart.total} ${S.samplesWord}${span}${p75}${cold}`;
 }
 
+/** The x axis as the zone in force reads it: its ticks and its zone label —
+ *  the same for every chart of a timeline. */
+interface ZoneAxis {
+  tz: string;
+  ticks: TimelineTick[];
+  zone: string;
+}
+
+function zoneAxis(axis: TimelineAxis, tz: string): ZoneAxis {
+  const ticks = axisTicks(axis, tz);
+  return { tz, ticks, zone: zoneSpanLabel(axis.minTs, axis.maxTs, tz, ticks.map((t) => t.ts)) };
+}
+
 function timelineChartHtml(
   view: ReportView,
   chart: TimelineChart,
   chartIndex: number,
   slots: Map<string, number>,
-  tz: string,
+  zoned: ZoneAxis,
 ): string {
+  const tz = zoned.tz;
   const axis = axisOf(view);
   const heading = metricHeading(chart.metric);
   const coverage = `${chart.okCount} ${S.ofWord} ${chart.total} ${S.samplesWord}`;
@@ -567,21 +634,21 @@ function timelineChartHtml(
 
   // Vertical gridlines + wall-clock tick labels in the chosen zone; edge
   // labels clamp inward so nothing clips at the svg boundary.
-  const xGrid = axis.ticks
+  const xGrid = zoned.ticks
     .map((tick) => {
       const x = tlX(axis, tick.ts);
       const anchor = x < TL_PL + 24 ? 'start' : x > plotRight - 24 ? 'end' : 'middle';
       return (
         `<line class="grid" x1="${x.toFixed(1)}" y1="${TL_PT}" x2="${x.toFixed(1)}" y2="${baselineY}"></line>` +
         `<text class="xlab" text-anchor="${anchor}" x="${x.toFixed(1)}" y="${baselineY + 15}">${escapeHtml(
-          tickText(tick.ts, axis.stepMs, tz),
+          tick.label,
         )}</text>`
       );
     })
     .join('');
   // The zone, ON the axis: under the y labels, level with the tick labels.
   const zoneText = `<text class="tzlab" text-anchor="end" x="${TL_PL - 6}" y="${baselineY + 15}">${escapeHtml(
-    zoneLabel(axis.minTs, tz),
+    zoned.zone,
   )}</text>`;
 
   // The run-level p75 reference line, labelled. The line sits UNDER the
@@ -704,8 +771,9 @@ export function timelineHtml(view: ReportView, tz: string = UTC, localTz: string
   const timeline = view.timeline;
   if (timeline.charts.length === 0) return ''; // zero Samples: the table already said so
   const slots = engineSlots(view);
+  const zoned = zoneAxis(axisOf(view), tz);
   const charts = timeline.charts
-    .map((chart, i) => timelineChartHtml(view, chart, i, slots, tz))
+    .map((chart, i) => timelineChartHtml(view, chart, i, slots, zoned))
     .join('');
   return (
     `<section class="timeline">` +
@@ -720,9 +788,20 @@ export function timelineHtml(view: ReportView, tz: string = UTC, localTz: string
 
 // -------------------------------------------------- drill-down (Route → …)
 
-function navigationRowHtml(nav: NavigationView, metricNames: string[]): string {
+/** An Engine's Navigations' zone in `tz`: the header's label, and whether
+ *  the rows straddle an offset change (each row then names its own zone).
+ *  The Navigations are in ts order, so the ends bound them. */
+function navigationZone(engine: EngineView, tz: string): { label: string; perRow: boolean } {
+  const navs = engine.navigations;
+  if (tz === UTC || navs.length === 0) return { label: UTC, perRow: false };
+  const label = zoneSpanLabel(navs[0]!.ts, navs[navs.length - 1]!.ts, tz);
+  return { label, perRow: label.includes('/') };
+}
+
+function navigationRowHtml(nav: NavigationView, metricNames: string[], tz: string, perRow: boolean): string {
   const iso = new Date(nav.ts).toISOString();
-  const time = iso.slice(11, 23);
+  const p = zoneParts(nav.ts, tz);
+  const time = `${p.hour}:${p.minute}:${p.second}.${p.ms}${perRow ? ` ${p.zone}` : ''}`;
   const coldFlag = nav.coldStart === true ? ` <span class="flag cold">${escapeHtml(S.coldStartFlag)}</span>` : '';
   const cells = metricNames
     .map((name) => {
@@ -772,19 +851,28 @@ export type DrillMode = 'lazy' | 'eager';
 /** Navigation rows per "show more" step in a lazily built Engine. */
 export const NAV_CHUNK = 500;
 
-function navHeadHtml(metricNames: string[]): string {
+/** The Navigation table's header row: the time column names the zone the
+ *  rows read in. */
+export function navigationHeadHtml(engine: EngineView, metricNames: string[], tz: string = UTC): string {
   return (
-    `<tr><th>${escapeHtml(S.timeColumn)}</th><th class="url">${escapeHtml(S.urlColumn)}</th>` +
+    `<tr><th>${escapeHtml(`${S.timeColumn} (${navigationZone(engine, tz).label})`)}</th><th class="url">${escapeHtml(S.urlColumn)}</th>` +
     metricNames.map((n) => `<th class="num">${escapeHtml(metricHeading(n))}</th>`).join('') +
     `<th>${escapeHtml(S.outcomeColumn)}</th></tr>`
   );
 }
 
-/** Navigation rows [from, to) of an Engine, for its table body. */
-export function navigationRowsHtml(engine: EngineView, metricNames: string[], from: number, to: number): string {
+/** Navigation rows [from, to) of an Engine, for its table body, read in `tz`. */
+export function navigationRowsHtml(
+  engine: EngineView,
+  metricNames: string[],
+  from: number,
+  to: number,
+  tz: string = UTC,
+): string {
   const navs = engine.navigations;
+  const { perRow } = navigationZone(engine, tz);
   let html = '';
-  for (let i = from; i < Math.min(to, navs.length); i++) html += navigationRowHtml(navs[i]!, metricNames);
+  for (let i = from; i < Math.min(to, navs.length); i++) html += navigationRowHtml(navs[i]!, metricNames, tz, perRow);
   return html;
 }
 
@@ -799,12 +887,13 @@ export function moreNavigationsHtml(engine: EngineView, shown: number): string {
 }
 
 /** The inside of an Engine's <details>, after its summary: the Navigation
- *  table — every row ('eager'), or the first NAV_CHUNK and a "show more". */
-export function engineBodyHtml(engine: EngineView, metricNames: string[], drills: DrillMode): string {
+ *  table — every row ('eager'), or the first NAV_CHUNK and a "show more" —
+ *  read in `tz`. */
+export function engineBodyHtml(engine: EngineView, metricNames: string[], drills: DrillMode, tz: string = UTC): string {
   const shown = drills === 'eager' ? engine.navigations.length : Math.min(NAV_CHUNK, engine.navigations.length);
   return (
-    `<div class="table-scroll"><table class="navs"><thead>${navHeadHtml(metricNames)}</thead><tbody>` +
-    navigationRowsHtml(engine, metricNames, 0, shown) +
+    `<div class="table-scroll"><table class="navs"><thead>${navigationHeadHtml(engine, metricNames, tz)}</thead><tbody>` +
+    navigationRowsHtml(engine, metricNames, 0, shown, tz) +
     `</tbody></table></div>` +
     moreNavigationsHtml(engine, shown)
   );
@@ -816,6 +905,7 @@ function engineHtml(
   soloEngine: boolean,
   drills: DrillMode,
   engineIndex: number,
+  tz: string,
 ): string {
   const fill = drills === 'eager' || soloEngine;
   return (
@@ -827,7 +917,7 @@ function engineHtml(
     )}</span> — ${escapeHtml(nSamples(engine.sampleCount))} · ${escapeHtml(
       S.navigationsHeading,
     )}</summary>` +
-    (fill ? engineBodyHtml(engine, metricNames, drills) : '') +
+    (fill ? engineBodyHtml(engine, metricNames, drills, tz) : '') +
     `</details>`
   );
 }
@@ -872,17 +962,18 @@ function engineSpreadHtml(group: TestGroupView, metricNames: string[]): string {
 }
 
 /** The inside of a Test's <details>, after its summary: the Engine spread and
- *  one (closed, lazily filled) <details> per Engine. */
+ *  one (closed, lazily filled) <details> per Engine; rows read in `tz`. */
 export function testGroupBodyHtml(
   group: TestGroupView,
   metricNames: string[],
   soloTest: boolean,
   drills: DrillMode,
+  tz: string = UTC,
 ): string {
   const soloEngine = soloTest && group.engines.length === 1;
   return (
     engineSpreadHtml(group, metricNames) +
-    group.engines.map((engine, i) => engineHtml(engine, metricNames, soloEngine, drills, i)).join('')
+    group.engines.map((engine, i) => engineHtml(engine, metricNames, soloEngine, drills, i, tz)).join('')
   );
 }
 
@@ -892,6 +983,7 @@ function testGroupHtml(
   soloTest: boolean,
   drills: DrillMode,
   testIndex: number,
+  tz: string,
 ): string {
   const label = group.legacy ? S.legacyTestGroup : group.label;
   const fill = drills === 'eager' || soloTest;
@@ -900,7 +992,7 @@ function testGroupHtml(
       fill ? '' : ' data-lazy=""'
     }${soloTest ? ' open' : ''}>` +
     `<summary>${escapeHtml(label)} — ${escapeHtml(nSamples(group.sampleCount))}</summary>` +
-    (fill ? testGroupBodyHtml(group, metricNames, soloTest, drills) : '') +
+    (fill ? testGroupBodyHtml(group, metricNames, soloTest, drills, tz) : '') +
     `</details>`
   );
 }
@@ -911,8 +1003,14 @@ export function drillId(idPrefix: string, index: number): string {
 }
 
 /** The inside of one Route's drill-down row: blend note, histograms, the
- *  Test → Engine → Navigation groups (each level lazy in 'lazy' mode). */
-export function drillContentHtml(route: RouteView, metricNames: string[], drills: DrillMode = 'eager'): string {
+ *  Test → Engine → Navigation groups (each level lazy in 'lazy' mode), the
+ *  Navigation rows read in `tz`. */
+export function drillContentHtml(
+  route: RouteView,
+  metricNames: string[],
+  drills: DrillMode = 'eager',
+  tz: string = UTC,
+): string {
   const blendNote = route.blended
     ? `<p class="blend-note">${escapeHtml(`${route.testCount} ${S.testsWord} — ${S.blendCaveat}`)}</p>`
     : '';
@@ -925,7 +1023,7 @@ export function drillContentHtml(route: RouteView, metricNames: string[], drills
   const soloTest = route.tests.length === 1;
   const tests =
     `<section><h3>${escapeHtml(S.testsHeading)}</h3>` +
-    route.tests.map((group, i) => testGroupHtml(group, metricNames, soloTest, drills, i)).join('') +
+    route.tests.map((group, i) => testGroupHtml(group, metricNames, soloTest, drills, i, tz)).join('') +
     `</section>`;
   return blendNote + histos + tests;
 }
@@ -937,11 +1035,12 @@ function drillHtml(
   index: number,
   colSpan: number,
   drills: DrillMode,
+  tz: string,
 ): string {
   const lazy = drills === 'lazy';
   return (
     `<tr id="${drillId(idPrefix, index)}" class="drill"${lazy ? ' data-lazy=""' : ''} hidden>` +
-    `<td colspan="${colSpan}">${lazy ? '' : drillContentHtml(route, metricNames, drills)}</td></tr>`
+    `<td colspan="${colSpan}">${lazy ? '' : drillContentHtml(route, metricNames, drills, tz)}</td></tr>`
   );
 }
 
@@ -973,7 +1072,7 @@ function routeRowHtml(route: RouteView, idPrefix: string, index: number): string
   );
 }
 
-function routeTableHtml(view: ReportView, idPrefix: string, drills: DrillMode): string {
+function routeTableHtml(view: ReportView, idPrefix: string, drills: DrillMode, tz: string): string {
   if (view.totalSamples === 0) {
     return `<p class="no-samples">${escapeHtml(S.noSamples)}</p>`;
   }
@@ -987,7 +1086,7 @@ function routeTableHtml(view: ReportView, idPrefix: string, drills: DrillMode): 
     .map(
       (route, i) =>
         routeRowHtml(route, idPrefix, i) +
-        drillHtml(route, view.metricNames, idPrefix, i, colSpan, drills),
+        drillHtml(route, view.metricNames, idPrefix, i, colSpan, drills, tz),
     )
     .join('');
   return (
@@ -1082,7 +1181,7 @@ export function variantHtml(
 ): string {
   return (
     (note === null ? '' : `<p class="excluded-note">${escapeHtml(note)}</p>`) +
-    routeTableHtml(view, idPrefix, drills) +
+    routeTableHtml(view, idPrefix, drills, zone.tz) +
     timelineHtml(view, zone.tz, zone.localTz)
   );
 }
