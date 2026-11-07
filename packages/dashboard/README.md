@@ -8,7 +8,7 @@ implements issue #2 — the fetch/extract/cache layer the later views build on.
 
 `scripts/fetch-cache.ts` is the **only** thing that talks to the live BlazeMeter
 API. It walks the API chain for a master id and writes every Engine's artifact to
-a local cache, extracted and **namespaced by `sessionId`**. The test suite reads
+a local cache, **namespaced by `sessionId`**. The test suite reads
 that cache and never touches the network; the script is run by hand and fails
 loudly.
 
@@ -25,9 +25,18 @@ ungracefully emits no zip — a normal outcome, not an error).
 
 ```
 .artifact-cache/{masterId}/manifest.json     session list + per-Engine outcome + master status
-.artifact-cache/{masterId}/{sessionId}.zip   raw fetched bytes
-.artifact-cache/{masterId}/{sessionId}/...    extracted, namespaced by sessionId
+.artifact-cache/{masterId}/{sessionId}.zip   raw fetched bytes, one zip per Engine
 ```
+
+Nothing is extracted to disk. The report reads each cached zip in memory with
+the same reader `--artifacts` uses, and inflates only the record entries
+(`bzm-vitals-sample-*`, `bzm-vitals-outcome-*`, `performance-audit-*`). The
+video, traces and HTML reports in an artifacts.zip are never decompressed.
+(Caches written by earlier versions also held an extracted `{sessionId}/`
+folder; the next run deletes it.) To look inside the zips, pass
+`--extract <dir>`: it also unzips every Engine's cached artifacts into
+`<dir>/{sessionId}/`. It is for debugging only. The report does not use it,
+and it applies to `--master` only.
 
 The script writes to the repo root's `.artifact-cache/`. The CLI uses, in order:
 
@@ -42,15 +51,15 @@ installed into; run from there, or pass `--cache-dir`, to reuse that cache.)
 Cross-Engine attachment basenames are **identical by construction** (basename is
 `sha1` of the fixed absolute path Taurus passes to every Engine), so extracting
 two Engines into one directory would silently destroy half the Samples.
-Namespacing by `sessionId` is what prevents that.
+Namespacing by `sessionId` is what prevents that: each zip is one Engine, and its
+records are attributed to that Engine as they are read.
 
 ### Re-running is cheap
 
 A second run against a master that had **ENDED** when it was cached does
 **zero** network calls and needs no credentials: the manifest is trusted and
-extraction re-runs from the cached raw zip. The raw bytes are cached alongside
-the extraction on purpose, so an extraction-logic change never forces a
-refetch.
+the records are read again from the cached raw zips. Because the cache keeps
+the raw bytes, a change to the reader never forces a refetch.
 
 A master cached while it was still running is not trusted: the next run lists
 its sessions again and fetches only the ones that are new, unfinished or

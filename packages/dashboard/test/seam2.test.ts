@@ -8,7 +8,7 @@
 //
 // Two fixtures drive it:
 //   - the committed probe zips (real fetched bytes, two Engines, zero Samples)
-//     prove sessions are enumerated, extraction is namespaced, and a Report
+//     prove sessions are enumerated, caching is namespaced, and a Report
 //     with no vitals says "no samples" rather than 0;
 //   - a synthesized pair of zips carrying canonical format-v1 Samples with
 //     COLLIDING basenames proves both Engines' Samples survive and arrive
@@ -24,6 +24,7 @@ import { SAMPLE_ATTACHMENT_PREFIX } from 'bzm-vitals-format';
 import { runCli } from '../src/cli.js';
 import { jsonResponse, bytesResponse, recordingTransport } from './helpers/transport.js';
 import { makeZip } from './helpers/zip.js';
+import { readZipEntries } from '../src/zip.js';
 import { parseBlob } from './helpers/blob.js';
 
 const PROBE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'probe');
@@ -113,7 +114,7 @@ afterEach(async () => {
 });
 
 describe('Seam 2 — probe Report (real bytes, two Engines, zero Samples)', () => {
-  it('enumerates sessions, extracts namespaced, and says "no samples"', async () => {
+  it('enumerates sessions, caches namespaced, and says "no samples"', async () => {
     const zipA = await readFile(path.join(PROBE_DIR, `${PROBE_A}.zip`));
     const zipB = await readFile(path.join(PROBE_DIR, `${PROBE_B}.zip`));
     const { transport } = stubApi('82724289', {
@@ -139,12 +140,16 @@ describe('Seam 2 — probe Report (real bytes, two Engines, zero Samples)', () =
     expect(data.sessions.map((s) => s.sessionId).sort()).toEqual([PROBE_A, PROBE_B].sort());
     expect(data.sessions.map((s) => s.locationId).sort()).toEqual(['us-west-1', 'us-west-2']);
 
-    // Extraction namespaced by sessionId — both Engines' colliding files on disk.
+    // Cached namespaced by sessionId — one zip per Engine, read in memory and
+    // never extracted, so the two Engines' colliding basenames never meet on disk.
     const masterDir = path.join(cacheRoot, '82724289');
-    const filesA = await readdir(path.join(masterDir, PROBE_A));
-    const filesB = await readdir(path.join(masterDir, PROBE_B));
-    expect(filesA.length).toBeGreaterThan(0);
-    expect(filesA.sort()).toEqual(filesB.sort()); // the collision is real
+    expect((await readdir(masterDir)).sort()).toEqual(
+      ['manifest.json', `${PROBE_A}.zip`, `${PROBE_B}.zip`].sort(),
+    );
+    const namesA = (await readZipEntries(zipA)).map((e) => e.name).sort();
+    const namesB = (await readZipEntries(zipB)).map((e) => e.name).sort();
+    expect(namesA.length).toBeGreaterThan(0);
+    expect(namesA).toEqual(namesB); // the collision is real
 
     // No vitals anywhere → "no samples", never a 0 — STATICALLY rendered:
     // the byte-test matches the server-emitted element, and the inline script

@@ -10,7 +10,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildReportData } from '../src/report.js';
-import type { MasterManifest } from '../src/cache.js';
+import { cacheMasterRecords, type MasterManifest } from '../src/cache.js';
+import { makeZip, type ZipInput } from './helpers/zip.js';
 
 const SESSION = 'r-v4-dedupe-test-session';
 
@@ -44,9 +45,6 @@ afterEach(async () => {
 
 describe('flattening-survivor deduplication', () => {
   it('counts a record once when the attachment copy and the bare survivor both exist', async () => {
-    const sessionDir = path.join(workDir, SESSION);
-    await mkdir(sessionDir, { recursive: true });
-
     // The attachment copies — one per Execution — plus the bare fixed-name
     // survivors, byte-identical to the LAST Execution's copies.
     const nav1 = JSON.stringify(sampleRecord(1, 1784300757338));
@@ -54,22 +52,39 @@ describe('flattening-survivor deduplication', () => {
     const otherExecution = JSON.stringify(
       { ...sampleRecord(1, 1784300700000), test: { ...sampleRecord(1, 0).test, repeat: 2, worker: 4 } },
     );
-    await writeFile(path.join(sessionDir, 'bzm-vitals-sample-1-aaaa.json'), otherExecution);
-    await writeFile(path.join(sessionDir, 'bzm-vitals-sample-1-bbbb.json'), nav1);
-    await writeFile(path.join(sessionDir, 'bzm-vitals-sample-2-cccc.json'), nav2);
-    await writeFile(path.join(sessionDir, 'bzm-vitals-sample-1.json'), nav1); // survivor
-    await writeFile(path.join(sessionDir, 'bzm-vitals-sample-2.json'), nav2); // survivor
     const outcomeJson = JSON.stringify(outcomeRecord);
-    await writeFile(path.join(sessionDir, 'bzm-vitals-outcome-dddd.json'), outcomeJson);
-    await writeFile(path.join(sessionDir, 'bzm-vitals-outcome.json'), outcomeJson); // survivor
+    const entry = (name: string, text: string): ZipInput => ({ name, data: Buffer.from(text) });
+    const zip = makeZip([
+      entry('bzm-vitals-sample-1-aaaa.json', otherExecution),
+      entry('bzm-vitals-sample-1-bbbb.json', nav1),
+      entry('bzm-vitals-sample-2-cccc.json', nav2),
+      entry('bzm-vitals-sample-1.json', nav1), // survivor
+      entry('bzm-vitals-sample-2.json', nav2), // survivor
+      entry('bzm-vitals-outcome-dddd.json', outcomeJson),
+      entry('bzm-vitals-outcome.json', outcomeJson), // survivor
+    ]);
 
+    // A cached, finished master: read offline through the API/cache path.
+    const masterDir = path.join(workDir, '82731327');
+    await mkdir(masterDir, { recursive: true });
+    await writeFile(path.join(masterDir, `${SESSION}.zip`), zip);
     const manifest: MasterManifest = {
       masterId: '82731327',
       fetchedAt: '2026-07-17T15:10:00.000Z',
       reportName: null,
-      sessions: [{ sessionId: SESSION, locationId: 'us-west-1', status: 'ENDED', artifact: 'present' }],
+      masterStatus: 'ENDED',
+      sessions: [
+        { sessionId: SESSION, locationId: 'us-west-1', status: 'ENDED', artifact: 'present', zipPath: `${SESSION}.zip` },
+      ],
     };
-    const data = await buildReportData(manifest, workDir);
+    await writeFile(path.join(masterDir, 'manifest.json'), JSON.stringify(manifest));
+    const cached = await cacheMasterRecords('82731327', {
+      cacheRoot: workDir,
+      creds: async () => {
+        throw new Error('a cached, finished master needs no credentials');
+      },
+    });
+    const data = await buildReportData(cached);
 
     // 3 distinct records, not 5; 1 outcome, not 2.
     expect(data.samples).toHaveLength(3);

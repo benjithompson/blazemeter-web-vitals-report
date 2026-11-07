@@ -1,8 +1,8 @@
 // Build the ReportData — the object the emitted HTML embeds and Seam 2 parses
-// back out. Reads each Engine's record files — from a cached master's
-// extracted session directories, or from local artifacts (local.ts) — parses
-// canonical Samples, adapts legacy records, attributes everything with the
-// Engine identity, and aggregates crudely.
+// back out. Takes each Engine's record files — from a cached master's zips or
+// from local artifacts, both read in memory by local.ts — parses canonical
+// Samples, adapts legacy records, attributes everything with the Engine
+// identity, and aggregates crudely.
 //
 // A file that LOOKS like a record but cannot be read is recorded per-file
 // under its session as unreadable, with a reason — loud, never silently
@@ -10,9 +10,7 @@
 // nor legacy audit records (bzt.log, config.yml, the html report twins…) are
 // simply not records, and are ignored.
 
-import { readdir, readFile } from 'node:fs/promises';
-import path from 'node:path';
-import type { MasterManifest } from './cache.js';
+import type { CachedMaster } from './cache.js';
 import {
   isOutcomeAttachment,
   isSampleAttachment,
@@ -110,28 +108,10 @@ export function isRecordFileName(basename: string): boolean {
   );
 }
 
-/** Read every record out of a cached, extracted master directory. */
-export async function buildReportData(
-  manifest: MasterManifest,
-  masterDir: string,
-): Promise<ReportData> {
-  const engines: EngineRecords[] = [];
-  for (const session of manifest.sessions) {
-    const files: RecordFile[] = [];
-    if (session.artifact === 'present') {
-      const sessionDir = path.join(masterDir, session.sessionId);
-      for (const file of (await readdir(sessionDir)).sort()) {
-        files.push({ file, read: () => readFile(path.join(sessionDir, file), 'utf8') });
-      }
-    }
-    engines.push({
-      sessionId: session.sessionId,
-      locationId: session.locationId,
-      status: session.status,
-      artifact: session.artifact,
-      files,
-    });
-  }
+/** The API/cache path: a cached master's Engines, already read in memory from
+ *  their zips by cacheMasterRecords (cache.ts) — the same reader local import
+ *  uses, so the two input modes differ only in where Engine identity comes from. */
+export async function buildReportData({ manifest, engines }: CachedMaster): Promise<ReportData> {
   return assembleReportData({
     masterId: manifest.masterId,
     reportName: manifest.reportName ?? null,

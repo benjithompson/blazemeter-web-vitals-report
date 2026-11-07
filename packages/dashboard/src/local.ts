@@ -21,6 +21,9 @@
 // Records are read in memory by path and never flattened onto disk: a local
 // test-results tree repeats basenames (bzm-vitals-outcome.json per test dir),
 // and flattening would destroy all but one — the collision SPEC.md warns of.
+// Zips are read lazily (zip.ts): only record entries and nested zips are
+// inflated. The API/cache path reads its cached zips through readZipRecords
+// below, so both input modes share one reader.
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -68,26 +71,80 @@ function noteFile(scan: Scan, segments: string[], read: () => Promise<string>): 
   }
 }
 
-async function scanZip(scan: Scan, bytes: Buffer, zipSegments: string[], display: string) {
+const NOT_READ = (): Promise<string> => Promise.reject(new Error('bzt.log is never read'));
+
+/**
+ * Scan one zip, lazily: only record entries and nested zips are inflated.
+ * bzt.log matters only for being THERE (an Engine boundary), so it is noted
+ * from the central directory and never inflated; everything else — video,
+ * traces, html reports — is skipped by name. Returns the zip's file-entry count.
+ */
+async function scanZip(
+  scan: Scan,
+  bytes: Buffer,
+  zipSegments: string[],
+  display: string,
+): Promise<number> {
+  const segmentsOf = (entryName: string) => [
+    ...zipSegments,
+    ...entryName.split('/').filter((s) => s.length > 0),
+  ];
+  let entryCount = 0;
+  const wanted = (entryName: string): boolean => {
+    entryCount += 1;
+    const segments = segmentsOf(entryName);
+    if (segments.length === zipSegments.length || isMacJunk(segments)) return false;
+    const name = segments[segments.length - 1]!;
+    if (name === TAURUS_LOG) {
+      noteFile(scan, segments, NOT_READ);
+      return false;
+    }
+    return ZIP_RE.test(name) || isRecordFileName(name);
+  };
+
   let entries;
   try {
-    entries = await readZipEntries(bytes);
+    entries = await readZipEntries(bytes, wanted);
   } catch (err) {
     throw new Error(`cannot read ${display}: ${(err as Error).message}`, { cause: err });
   }
   scan.boundaries.add(joinSegments(zipSegments));
   for (const entry of entries) {
-    const segments = [...zipSegments, ...entry.name.split('/').filter((s) => s.length > 0)];
-    if (segments.length === zipSegments.length || isMacJunk(segments)) continue;
-    const name = segments[segments.length - 1]!;
-    if (ZIP_RE.test(name)) {
+    const segments = segmentsOf(entry.name);
+    if (ZIP_RE.test(segments[segments.length - 1]!)) {
       await scanZip(scan, entry.data, segments, `${display}/${entry.name}`);
     } else {
       const data = entry.data;
       noteFile(scan, segments, async () => data.toString('utf8'));
     }
   }
+  return entryCount;
 }
+
+/** One zip's record files, read in memory — the cache path's reader. */
+export interface ZipRecords {
+  /** Record files, display paths relative to the zip root, sorted. */
+  files: RecordFile[];
+  /** Every file entry in the zip, records or not. */
+  entryCount: number;
+}
+
+/**
+ * Read one Engine's artifacts.zip with the same lazy scan local import uses
+ * (nested zips included): only records are inflated and CRC-checked. The
+ * caller already knows the Engine, so no identity is inferred. Throws when
+ * the zip is truncated or a record in it is corrupt.
+ */
+export async function readZipRecords(bytes: Buffer, display: string): Promise<ZipRecords> {
+  const scan: Scan = { records: [], boundaries: new Set(), taurusLogs: [] };
+  const entryCount = await scanZip(scan, bytes, [], display);
+  const files = scan.records
+    .map((r) => ({ file: joinSegments(r.segments), read: r.read }))
+    .sort(byFile);
+  return { files, entryCount };
+}
+
+const byFile = (a: RecordFile, b: RecordFile) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0);
 
 async function scanDir(scan: Scan, absDir: string, dirSegments: string[]) {
   const dirents = await readdir(absDir, { withFileTypes: true });
@@ -171,6 +228,6 @@ export async function readLocalArtifacts(inputPath: string): Promise<EngineRecor
     locationId: LOCAL_LOCATION_ID,
     status: LOCAL_SESSION_STATUS,
     artifact: 'present' as const,
-    files: engines.get(sessionId)!.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)),
+    files: engines.get(sessionId)!.sort(byFile),
   }));
 }

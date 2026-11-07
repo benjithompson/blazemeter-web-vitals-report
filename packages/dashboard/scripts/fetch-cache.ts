@@ -7,7 +7,7 @@
 //     npx tsx packages/dashboard/scripts/fetch-cache.ts <masterId> [<masterId> ...]
 //
 // Writes each Report's every Engine artifact into <repo>/.artifact-cache/{masterId}/
-// (or $BZM_VITALS_CACHE_DIR/{masterId}/), extracted and namespaced by sessionId.
+// (or $BZM_VITALS_CACHE_DIR/{masterId}/), one zip per sessionId (never extracted).
 // The cache is gitignored and re-fetchable. Re-running against a master cached
 // after it ENDED does no network calls.
 

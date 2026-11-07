@@ -3,7 +3,7 @@
 //
 //   npx bzm-vitals-dashboard --master 82723459 --out report.html
 //
-// One command, one file, the data baked in. fetch → extract → adapt →
+// One command, one file, the data baked in. fetch → read in memory → adapt →
 // attribute → aggregate crudely → embed → emit. Cache-through: artifacts land
 // in the gitignored .artifact-cache, so a repeat run (or a run after the fetch
 // script) does zero network calls — and needs no credentials at all. A master
@@ -17,13 +17,14 @@
 // stubbed Transport and never touch the network.
 
 import { realpathSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { loadCredentials, type Transport } from './http.js';
 import { resolveApiBase } from './api.js';
-import { cacheMaster, defaultCacheRoot } from './cache.js';
+import { cacheMasterRecords, defaultCacheRoot } from './cache.js';
+import { extractNamespaced } from './extract.js';
 import { assembleReportData, buildReportData, type ReportData } from './report.js';
 import { readLocalArtifacts } from './local.js';
 import { renderHtml } from './render.js';
@@ -59,6 +60,8 @@ const HELP = [
   '  --cache-dir <dir>           Cache directory (API mode); overrides BZM_VITALS_CACHE_DIR.',
   '                              Default ./.artifact-cache under the current directory.',
   '  --refresh                   Ignore the cache for this master and fetch it again.',
+  '  --extract <dir>             Debugging (API mode): also unzip each Engine\'s cached',
+  '                              artifacts into <dir>/{sessionId}/. The report never needs it.',
   '  -h, --help                  Print this help and exit.',
   '  --version                   Print the version and exit.',
   '',
@@ -100,7 +103,14 @@ export interface RunCliOptions {
 export type CliArgs =
   | { source: 'help' }
   | { source: 'version' }
-  | { source: 'api'; masterId: string; outPath: string; cacheDir?: string; refresh?: true }
+  | {
+      source: 'api';
+      masterId: string;
+      outPath: string;
+      cacheDir?: string;
+      refresh?: true;
+      extractDir?: string;
+    }
   | { source: 'local'; artifactsPath: string; masterId: string | null; outPath: string };
 
 /** The whole flag table; each flag also gets a line in HELP. */
@@ -110,6 +120,7 @@ const CLI_OPTIONS = {
   out: { type: 'string' },
   'cache-dir': { type: 'string' },
   refresh: { type: 'boolean' },
+  extract: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean' },
 } as const satisfies ParseArgsConfig['options'];
@@ -164,6 +175,9 @@ export function parseCliArgs(argv: string[]): CliArgs {
 
   if (outPath === undefined) throw new CliUsageError(USAGE, 1);
   if (artifactsPath !== undefined) {
+    if (values.extract !== undefined) {
+      throw malformed(`option '--extract' applies to --master only; --artifacts input is already on disk`);
+    }
     return { source: 'local', artifactsPath, masterId: masterId ?? null, outPath };
   }
   if (masterId === undefined) throw new CliUsageError(USAGE, 1);
@@ -174,6 +188,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     outPath,
     ...(values['cache-dir'] !== undefined && { cacheDir: values['cache-dir'] }),
     ...(values.refresh && { refresh: true as const }),
+    ...(values.extract !== undefined && { extractDir: values.extract }),
   };
 }
 
@@ -232,7 +247,7 @@ async function buildFromApi(
 
   // Credentials authenticate only the listing calls, so they are loaded only
   // if the network is needed: a finished, cached master runs offline.
-  const manifest = await cacheMaster(masterId, {
+  const cached = await cacheMasterRecords(masterId, {
     creds: async () => {
       const creds = await loadCredentials(env);
       log(`fetching Report ${masterId} — an archived Report may take a moment (latency, not failure)`);
@@ -245,7 +260,21 @@ async function buildFromApi(
     log,
   });
 
-  return buildReportData(manifest, path.join(cacheRoot, masterId));
+  if (args.extractDir !== undefined) {
+    // Debugging only: the report above never touched these files on disk.
+    const masterDir = path.join(cacheRoot, masterId);
+    for (const s of cached.manifest.sessions) {
+      if (s.artifact !== 'present' || !s.zipPath) continue;
+      const { sessionDir } = await extractNamespaced(
+        await readFile(path.join(masterDir, s.zipPath)),
+        s.sessionId,
+        args.extractDir,
+      );
+      log(`extracted ${s.sessionId} to ${sessionDir}`);
+    }
+  }
+
+  return buildReportData(cached);
 }
 
 // Thin executable wrapper — everything above is invocable in-process.
