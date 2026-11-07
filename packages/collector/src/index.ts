@@ -43,7 +43,7 @@ import {
   type ExecutionOutcome,
   type ExecutionStatus,
 } from 'bzm-vitals-format';
-import { Pusher, resolveFlushMs } from './pusher.js';
+import { Pusher, resolveFlushMs, PUSH_STATUS_ATTACHMENT_PREFIX } from './pusher.js';
 import { createDestinationsFromEnv } from './destinations.js';
 
 /** The binding the in-page trap calls to hand a raw reading back to Node. */
@@ -632,6 +632,33 @@ async function writeOutcome(testInfo: TestInfo): Promise<void> {
 }
 
 /**
+ * The last test each worker's pusher served — the worker-scoped fixture has no TestInfo of
+ * its own, so the Push Status is attached through this one after the drain. Set by `page`.
+ */
+const pushStatusTarget = new WeakMap<Pusher, TestInfo>();
+
+/**
+ * Write-then-attach the worker's Push Status (per destination: sent / failed / dropped /
+ * lastError) after the teardown drain, through the same mandatory two-step as Samples. Only
+ * when a destination was enabled — the local path writes nothing. It is attached via the
+ * worker's last test, after that test has been reported, so it lands on disk (which is what
+ * the Engine collects) rather than in a reporter's listing. Best-effort: never throws.
+ */
+async function writePushStatus(pusher: Pusher, workerIndex: number): Promise<void> {
+  const status = pusher.status();
+  const testInfo = pushStatusTarget.get(pusher);
+  if (status.length === 0 || testInfo === undefined) return;
+  try {
+    const name = `${PUSH_STATUS_ATTACHMENT_PREFIX}-${workerIndex}`;
+    const outPath = testInfo.outputPath(`${name}.json`);
+    await writeFile(outPath, JSON.stringify({ worker: workerIndex, destinations: status }), 'utf8');
+    await testInfo.attach(name, { path: outPath, contentType: 'application/json' });
+  } catch (err) {
+    process.stderr.write(`[bzm-vitals] push status not written: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+/**
  * The one knob on the whole surface, and it is optional. route() declares the Route for
  * the Navigation the page is CURRENTLY on — the most recent one — or, when called before
  * any navigation, for the next one. So `await page.goto('/order/12345');
@@ -676,15 +703,20 @@ type CollectorWorkerFixtures = {
  */
 export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
   _vitalsPusher: [
-    async ({}, use) => {
+    async ({}, use, workerInfo) => {
       const pusher = new Pusher({
         destinations: createDestinationsFromEnv(),
         flushMs: resolveFlushMs(process.env),
+        // Failures are loud but never flood: the pusher emits each distinct reason once
+        // per destination.
+        onWarn: (message) => process.stderr.write(`[bzm-vitals] ${message}\n`),
       });
       pusher.start();
       await use(pusher);
-      // Worker teardown: stop the timer and drain the tail within a bounded budget.
+      // Worker teardown: stop the timer and drain the tail within a bounded budget, then
+      // record what happened to every Sample this worker pushed.
       await pusher.close();
+      await writePushStatus(pusher, workerInfo.workerIndex);
     },
     { scope: 'worker', auto: true },
   ],
@@ -718,6 +750,7 @@ export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
   ],
 
   page: async ({ page, _collectorState, _vitalsPusher }, use, testInfo) => {
+    pushStatusTarget.set(_vitalsPusher, testInfo);
     await attachCollector(page, testInfo, _collectorState, _vitalsPusher);
     try {
       await use(page);

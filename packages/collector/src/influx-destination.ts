@@ -13,7 +13,15 @@
 // token travels only in the writer's Authorization header (never a Sample, log, or artifact).
 
 import type { Sample, Metric } from 'bzm-vitals-format';
-import type { Destination } from './pusher.js';
+import {
+  PushError,
+  isRetryableStatus,
+  parseRetryAfter,
+  realClock,
+  sendWithRetry,
+  type Clock,
+  type Destination,
+} from './pusher.js';
 import { routeOf, resolveIdentity, type Env } from './shared.js';
 import { InfluxWriter, type InfluxConfig, type InfluxFetchLike, type Point } from './influx-writer.js';
 
@@ -133,7 +141,16 @@ export interface InfluxDeps {
   fetch?: InfluxFetchLike;
   /** Per-request timeout override (tests). */
   timeoutMs?: number;
+  /** Clock for request timeouts and retry backoff (tests inject a manual one). */
+  clock?: Clock;
+  /** Jitter source in [0, 1) for retry backoff (tests pin it). */
+  random?: () => number;
 }
+
+/** The write path, for failure reasons — the query (org/bucket) is left out of them. */
+const WRITE_PATH = '/api/v2/write';
+/** Per-request timeout default, matching the writer's own. */
+const INFLUX_REQUEST_TIMEOUT_MS = 8_000;
 
 /**
  * The InfluxDB destination. Self-enables only when a full connection is resolvable and the
@@ -152,7 +169,10 @@ export class InfluxDestination implements Destination {
   private readonly location: string;
   /** The Engine tag, or null to aggregate per location (default). */
   private readonly engine: string | null;
-  private readonly writer: InfluxWriter | null;
+  private readonly fetchImpl: InfluxFetchLike;
+  private readonly timeoutMs: number;
+  private readonly clock: Clock;
+  private readonly random: (() => number) | undefined;
 
   constructor(deps: InfluxDeps = {}) {
     const env = deps.env ?? process.env;
@@ -163,11 +183,11 @@ export class InfluxDestination implements Destination {
     this.measurement = resolveMeasurement(env);
     this.location = identity.location;
     this.engine = identity.engine;
-    // The writer is built only when a config exists; a disabled sink allocates nothing.
-    this.writer =
-      this.config !== null
-        ? new InfluxWriter({ config: this.config, precision: 'ms', fetch: deps.fetch, timeoutMs: deps.timeoutMs })
-        : null;
+    this.fetchImpl =
+      deps.fetch ?? ((url, init) => fetch(url, init) as unknown as ReturnType<InfluxFetchLike>);
+    this.timeoutMs = deps.timeoutMs ?? INFLUX_REQUEST_TIMEOUT_MS;
+    this.clock = deps.clock ?? realClock;
+    this.random = deps.random;
   }
 
   isEnabled(): boolean {
@@ -179,19 +199,87 @@ export class InfluxDestination implements Destination {
     return this.isEnabled();
   }
 
-  /** Map the batch's ok vitals to wide-format Points and write them. No-op when empty. */
-  async send(batch: Sample[]): Promise<void> {
-    if (this.writer === null) return;
+  /** Map the batch's ok vitals to wide-format Points and write them, retrying transient
+   *  failures (429, 5xx, timeouts, network errors) with backoff. No-op when empty. */
+  async send(batch: Sample[], signal?: AbortSignal): Promise<void> {
+    if (this.config === null) return;
     const points = samplesToPoints(batch, {
       measurement: this.measurement,
       location: this.location,
       engine: this.engine,
     });
     if (points.length === 0) return;
-    await this.writer.write(points);
+    const config = this.config;
+    await sendWithRetry(() => this.writeOnce(config, points, signal), {
+      clock: this.clock,
+      signal,
+      random: this.random,
+    });
+  }
+
+  /**
+   * One write attempt. The writer stays transport-agnostic (it knows nothing of retries), so
+   * the destination hands it a transport that bounds the request on the injected clock,
+   * aborts it at the drain deadline, and observes the response status and Retry-After — the
+   * two facts the retry decision needs. Failures surface as a PushError whose message is
+   * status + path (+ the server's error detail), never the token.
+   */
+  private async writeOnce(config: InfluxConfig, points: Point[], outer: AbortSignal | undefined): Promise<void> {
+    const seen: { status: number | null; retryAfter: string | null } = { status: null, retryAfter: null };
+    const base = this.fetchImpl;
+    const timeoutMs = this.timeoutMs;
+    const clock = this.clock;
+    const transport: InfluxFetchLike = async (url, init) => {
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = clock.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+      const forward = () => controller.abort();
+      for (const s of [init?.signal, outer]) {
+        if (s?.aborted) controller.abort();
+        s?.addEventListener('abort', forward, { once: true });
+      }
+      try {
+        const res = await base(url, { ...init, signal: controller.signal });
+        seen.status = res.status;
+        seen.retryAfter = (res as { headers?: { get(n: string): string | null } }).headers?.get('retry-after') ?? null;
+        return res;
+      } catch (err) {
+        if (timedOut || init?.signal?.aborted) {
+          throw new PushError(`timed out after ${timeoutMs}ms on POST ${WRITE_PATH}`, true);
+        }
+        if (outer?.aborted) throw new PushError(`aborted at the drain deadline on POST ${WRITE_PATH}`, false);
+        throw new PushError(`network error on POST ${WRITE_PATH}: ${transportMessage(err)}`, true);
+      } finally {
+        timer.clear();
+        for (const s of [init?.signal, outer]) s?.removeEventListener('abort', forward);
+      }
+    };
+    const writer = new InfluxWriter({ config, precision: 'ms', fetch: transport, timeoutMs });
+    try {
+      await writer.write(points);
+    } catch (err) {
+      if (err instanceof PushError || seen.status === null) throw err;
+      // The writer's non-2xx error: "influx write → <status>: <detail>". Keep the detail.
+      const detail = (err instanceof Error ? err.message : String(err)).replace(/^influx write → \d+:?\s*/, '');
+      throw new PushError(
+        `${seen.status} on POST ${WRITE_PATH}${detail ? `: ${detail}` : ''}`,
+        isRetryableStatus(seen.status),
+        parseRetryAfter(seen.retryAfter),
+      );
+    }
   }
 
   async close(): Promise<void> {
     // The pusher owns the drain; the Influx sink holds no per-worker resource to free.
   }
+}
+
+/** A transport error's message, with its cause code (ECONNREFUSED…) when fetch wraps one. */
+function transportMessage(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const code = (err as { cause?: { code?: unknown } }).cause?.code;
+  return typeof code === 'string' ? `${err.message} (${code})` : err.message;
 }

@@ -13,6 +13,10 @@
 //              none of the three produce an interval; the observer-backed LCP/CLS still do.
 //   nocreds  — chromium vitals.spec with creds blanked: nothing is pushed and the on-disk
 //              records are exactly what a local run writes today.
+//   badcreds — the injection POST answers 401 (bad api key): one deduped stderr warning, and
+//              the Push Status attachment records the failure (C4).
+//   badsession — the masterId resolution GET answers 401: the destination comes up dead,
+//              says why once, and every Sample is tallied as failed (C4).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Sample } from 'bzm-vitals-format';
@@ -23,8 +27,17 @@ import {
   type BlazeMeterServer,
   type CapturedRequest,
 } from './helpers/blazemeter-server';
-import { runPlaywright, findSamples, findOutcomes, anyFileContains, type RunResult } from './helpers/run-playwright';
+import {
+  runPlaywright,
+  findSamples,
+  findOutcomes,
+  anyFileContains,
+  walkFiles,
+  type RunResult,
+} from './helpers/run-playwright';
+import { readFile } from 'node:fs/promises';
 import type { Interval } from '../src/blazemeter-destination';
+import type { PushStatus } from '../src/pusher';
 
 const KEY_ID = 'seam-a-key-id';
 const KEY_SECRET = 'seam-a-key-secret';
@@ -50,6 +63,40 @@ function intervalsOf(server: BlazeMeterServer): Interval[] {
   return server.injectionRequests().flatMap((r) => (r.body as { intervals?: Interval[] }).intervals ?? []);
 }
 
+interface PushStatusFile {
+  path: string;
+  raw: string;
+  record: { worker: number; destinations: PushStatus[] };
+}
+
+/** The Push Status files a run wrote — the originals (`bzm-vitals-push-status-<worker>.json`)
+ *  AND their attached copies (`…-<sha1>.json`), so a leak scan covers both. */
+async function findPushStatusFiles(outputDir: string): Promise<{ originals: PushStatusFile[]; all: string[] }> {
+  const all = (await walkFiles(outputDir)).filter((f) => /\/bzm-vitals-push-status-\d+(-[0-9a-f]+)?\.json$/.test(f));
+  const originals: PushStatusFile[] = [];
+  for (const path of all.filter((f) => /\/bzm-vitals-push-status-\d+\.json$/.test(f))) {
+    const raw = await readFile(path, 'utf8');
+    originals.push({ path, raw, record: JSON.parse(raw) });
+  }
+  return { originals, all };
+}
+
+/** One destination's tallies summed across every worker's Push Status in a run. */
+function totals(files: PushStatusFile[], destination: string): { sent: number; failed: number; dropped: number; lastErrors: string[] } {
+  const recs = files.flatMap((f) => f.record.destinations).filter((d) => d.destination === destination);
+  return {
+    sent: recs.reduce((n, r) => n + r.sent, 0),
+    failed: recs.reduce((n, r) => n + r.failed, 0),
+    dropped: recs.reduce((n, r) => n + r.dropped, 0),
+    lastErrors: recs.map((r) => r.lastError).filter((e): e is string => e !== null),
+  };
+}
+
+/** Every `[bzm-vitals]` line a run printed (worker stderr reaches the child's stderr). */
+function vitalsLines(r: RunResult): string[] {
+  return r.stderr.split('\n').filter((l) => l.startsWith('[bzm-vitals]'));
+}
+
 /** The metric leaf (last tier) of a metricPath. */
 function leafOf(metricPath: string): string {
   return metricPath.split(' | ').pop()!;
@@ -62,6 +109,8 @@ let bzmHostile: BlazeMeterServer;
 let bzmOverride: BlazeMeterServer;
 let bzmNoCreds: BlazeMeterServer;
 let bzmError: BlazeMeterServer;
+let bzmBadCreds: BlazeMeterServer;
+let bzmBadSession: BlazeMeterServer;
 
 let pushRun: RunResult;
 let firefoxRun: RunResult;
@@ -69,12 +118,14 @@ let hostileRun: RunResult;
 let overrideRun: RunResult;
 let noCredsRun: RunResult;
 let errorRun: RunResult;
+let badCredsRun: RunResult;
+let badSessionRun: RunResult;
 
 let pushSamples: Sample[];
 
 beforeAll(async () => {
   pageServer = await startFixtureServer();
-  [bzmPush, bzmFirefox, bzmHostile, bzmOverride, bzmNoCreds, bzmError] = await Promise.all([
+  [bzmPush, bzmFirefox, bzmHostile, bzmOverride, bzmNoCreds, bzmError, bzmBadCreds, bzmBadSession] = await Promise.all([
     // statusSessions carries the location name the collector reads back (LOCATION is unset).
     startBlazeMeterServer({ masterId: PUSH_MASTER, statusSessions: [{ id: 'r-v4-push', locationId: 'us-west-1' }] }),
     startBlazeMeterServer({ masterId: FIREFOX_MASTER, statusSessions: [{ id: 'r-v4-firefox', locationId: 'us-west-2' }] }),
@@ -83,9 +134,13 @@ beforeAll(async () => {
     startBlazeMeterServer({ masterId: 999 }),
     // Every injection POST 500s — the best-effort path under a broken API.
     startBlazeMeterServer({ masterId: 777, injectionStatus: 500 }),
+    // Bad api key: every injection POST 401s.
+    startBlazeMeterServer({ masterId: 444_444, injectionStatus: 401 }),
+    // Bad api key on an Engine: the masterId resolution GET 401s.
+    startBlazeMeterServer({ masterId: 555_555, sessionStatus: 401 }),
   ]);
 
-  [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun] = await Promise.all([
+  [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun, badCredsRun, badSessionRun] = await Promise.all([
     runPlaywright({
       spec: 'vitals.spec.ts',
       baseURL: pageServer.url,
@@ -122,6 +177,16 @@ beforeAll(async () => {
       // Push is ON (override master, no GET needed) but every injection POST 500s.
       env: { ...PUSH_BASE, BLAZEMETER_MASTER_ID: '777', BLAZEMETER_API_BASE: bzmError.url },
     }),
+    runPlaywright({
+      spec: 'vitals.spec.ts',
+      baseURL: pageServer.url,
+      env: { ...PUSH_BASE, BLAZEMETER_MASTER_ID: '444444', BLAZEMETER_API_BASE: bzmBadCreds.url },
+    }),
+    runPlaywright({
+      spec: 'vitals.spec.ts',
+      baseURL: pageServer.url,
+      env: { ...PUSH_BASE, SESSION_ID: 'r-v4-badsession', BLAZEMETER_API_BASE: bzmBadSession.url },
+    }),
   ]);
 
   pushSamples = (await findSamples(pushRun.outputDir)).map((f) => f.sample);
@@ -136,12 +201,14 @@ afterAll(async () => {
     bzmOverride?.close(),
     bzmNoCreds?.close(),
     bzmError?.close(),
+    bzmBadCreds?.close(),
+    bzmBadSession?.close(),
   ]);
 });
 
 describe('the happy path: importing the collector + api-key env + a resolvable master pushes live', () => {
   it('every child run exited 0 — the push never fails the test', () => {
-    for (const r of [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun]) {
+    for (const r of [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun, badCredsRun, badSessionRun]) {
       expect(r.exitCode, r.stderr).toBe(0);
     }
   });
@@ -281,9 +348,81 @@ describe('best-effort: a broken injection endpoint never fails the run or drops 
   });
 });
 
+describe('push failures are visible: one stderr line per reason, and a Push Status attachment (C4)', () => {
+  it('bad credentials (POST 401): stderr shows exactly one "[bzm-vitals] blazemeter: 401…" line', () => {
+    expect(bzmBadCreds.injectionRequests().length).toBeGreaterThan(0);
+    const lines = vitalsLines(badCredsRun);
+    expect(lines, badCredsRun.stderr).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[bzm-vitals\] blazemeter: 401 on POST \/api\/v4\/data\/timeseries/);
+  });
+
+  it('a 401 is never retried: one POST per flushed batch, never more POSTs than Samples', () => {
+    // vitals.spec makes 3 Navigations; a retried 401 would show up as extra identical POSTs.
+    const bodies = bzmBadCreds.injectionRequests().map((r) => JSON.stringify(r.body));
+    expect(new Set(bodies).size).toBe(bodies.length);
+  });
+
+  it('bad credentials: the Push Status attachment shows failed > 0 with the reason', async () => {
+    const { originals, all } = await findPushStatusFiles(badCredsRun.outputDir);
+    expect(originals.length).toBeGreaterThan(0);
+    expect(all.length).toBeGreaterThan(originals.length); // the attach({path}) copy exists too
+    const t = totals(originals, 'blazemeter');
+    expect(t.failed).toBeGreaterThan(0);
+    expect(t.sent).toBe(0);
+    expect(t.failed + t.dropped).toBe(3); // every Navigation accounted for
+    expect(t.lastErrors[0]).toMatch(/^401 on POST/);
+  });
+
+  it('bad credentials on resolution (GET 401): one line, and every Sample tallied as failed', async () => {
+    const lines = vitalsLines(badSessionRun);
+    expect(lines, badSessionRun.stderr).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[bzm-vitals\] blazemeter: 401 on GET \/api\/v4\/sessions\/r-v4-badsession/);
+    expect(bzmBadSession.injectionRequests()).toEqual([]);
+    const t = totals((await findPushStatusFiles(badSessionRun.outputDir)).originals, 'blazemeter');
+    expect(t).toMatchObject({ sent: 0, failed: 3, dropped: 0 });
+  });
+
+  it('a 500ing endpoint is retried, warned once, and tallied as failed', async () => {
+    const lines = vitalsLines(errorRun);
+    expect(lines, errorRun.stderr).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[bzm-vitals\] blazemeter: 500 on POST/);
+    const bodies = bzmError.injectionRequests().map((r) => JSON.stringify(r.body));
+    expect(new Set(bodies).size).toBeLessThan(bodies.length); // the same batch was re-sent
+    const t = totals((await findPushStatusFiles(errorRun.outputDir)).originals, 'blazemeter');
+    expect(t.failed + t.dropped).toBe(3);
+    expect(t.sent).toBe(0);
+  });
+
+  it('the happy path: the Push Status shows every Sample sent, nothing failed, and stderr is quiet', async () => {
+    expect(vitalsLines(pushRun), pushRun.stderr).toEqual([]);
+    const t = totals((await findPushStatusFiles(pushRun.outputDir)).originals, 'blazemeter');
+    expect(t).toEqual({ sent: 3, failed: 0, dropped: 0, lastErrors: [] });
+  });
+
+  it('the local path (no destination enabled) writes no Push Status at all', async () => {
+    expect((await findPushStatusFiles(noCredsRun.outputDir)).all).toEqual([]);
+    expect(vitalsLines(noCredsRun)).toEqual([]);
+  });
+});
+
 describe('the credential-leak invariant', () => {
+  it('the Push Status attachment (original and attached copy) carries no credential', async () => {
+    const authHeader = 'Basic ' + Buffer.from(`${KEY_ID}:${KEY_SECRET}`).toString('base64');
+    let scanned = 0;
+    for (const r of [pushRun, hostileRun, overrideRun, errorRun, badCredsRun, badSessionRun]) {
+      const { all } = await findPushStatusFiles(r.outputDir);
+      expect(all.length, `no push status in ${r.outputDir}`).toBeGreaterThan(0); // never vacuous
+      for (const f of all) {
+        const raw = await readFile(f, 'utf8');
+        for (const needle of [KEY_ID, KEY_SECRET, authHeader]) expect(raw, f).not.toContain(needle);
+        scanned++;
+      }
+    }
+    expect(scanned).toBeGreaterThan(0);
+  });
+
   it('the api-key id and secret appear in NO on-disk artifact of any run', async () => {
-    for (const r of [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun]) {
+    for (const r of [pushRun, firefoxRun, hostileRun, overrideRun, noCredsRun, errorRun, badCredsRun, badSessionRun]) {
       expect(await anyFileContains(r.outputDir, KEY_ID), `${KEY_ID} on disk in ${r.outputDir}`).toBe(false);
       expect(await anyFileContains(r.outputDir, KEY_SECRET), `${KEY_SECRET} on disk in ${r.outputDir}`).toBe(false);
     }
