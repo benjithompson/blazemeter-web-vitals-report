@@ -1,0 +1,203 @@
+# Release: Changesets versioning, npm publishing with provenance, and one GitHub Release
+# carrying the three single-file builds. Maintainer guide: .changeset/README.md.
+#
+# On every push to main:
+#   - unreleased changesets present -> `version` opens/updates the "Version Packages" PR
+#   - no changesets, and a package.json version is not on npm yet (that PR was merged)
+#       -> `pack` builds and packs the tarballs, `publish` publishes them to npm through
+#          trusted publishing (OIDC, no token; provenance is automatic) and pushes one
+#          `<package>@<version>` tag per published package, and `github-release` builds the
+#          standalone files and attaches all three to one GitHub Release
+#   - otherwise -> nothing
+#
+# No secrets are used. npm trusts this workflow file by name (one-time setup per package,
+# see .changeset/README.md). id-token: write is granted to the publish job only.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# Never cancel a release half-way; queue the next push behind it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  select-mode:
+    name: Select mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.select-mode.outputs.mode }}
+      publish-plan-artifact-id: ${{ steps.select-mode.outputs.publish-plan-artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci --ignore-scripts
+
+      # 'version' | 'publish' | 'none'. 'publish' also uploads the publish plan as an artifact.
+      - id: select-mode
+        uses: changesets/action/select-mode@v2.1.2
+
+  version:
+    name: Version Packages PR
+    needs: select-mode
+    if: needs.select-mode.outputs.mode == 'version'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the changeset-release/main branch
+      pull-requests: write # open/update the "Version Packages" PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci --ignore-scripts
+
+      # `version-packages` = changeset version, then sync the dashboard's DASHBOARD_VERSION
+      # constant, then refresh package-lock.json so `npm ci` keeps working on the PR.
+      - uses: changesets/action/version@v2.1.2
+        with:
+          script: npm run version-packages
+
+  pack:
+    name: Build and pack
+    needs: select-mode
+    if: needs.select-mode.outputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      pack-dir-artifact-id: ${{ steps.pack.outputs.pack-dir-artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      # tsc --build emits every package's dist/ (the only thing in each tarball).
+      - run: npm run typecheck
+
+      - id: pack
+        uses: changesets/action/pack@v2.1.2
+        with:
+          publish-plan-artifact-id: ${{ needs.select-mode.outputs.publish-plan-artifact-id }}
+
+  publish:
+    name: Publish to npm
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # push the <package>@<version> git tags
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      published-packages: ${{ steps.publish.outputs.published-packages }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1.
+      - run: npm install --global npm@^11.5.1 && npm --version
+
+      # Only the Changesets CLI is needed here; no dependency gets to run an install script
+      # in the job that holds the OIDC permission.
+      - run: npm ci --ignore-scripts
+
+      - id: publish
+        uses: changesets/action/publish@v2.1.2
+        with:
+          pack-dir-artifact-id: ${{ needs.pack.outputs.pack-dir-artifact-id }}
+          # One combined GitHub Release with the standalone files is created below
+          # instead of one release per package.
+          create-github-releases: false
+          push-git-tags: true
+
+  github-release:
+    name: GitHub Release with standalone files
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and its tag
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      - name: Standalone build (collector)
+        run: npm run build:standalone --workspace packages/collector
+
+      - name: Standalone build (dashboard)
+        run: npm run build:standalone --workspace packages/dashboard
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHED: ${{ needs.publish.outputs.published-packages }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          # One tag per release run; the per-package <name>@<version> tags were pushed by the
+          # publish job.
+          tag="release-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          node --input-type=module - <<'EOF'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const published = JSON.parse(process.env.PUBLISHED);
+          const dirs = { 'bzm-vitals-format': 'format', 'bzm-playwright-vitals': 'collector', 'bzm-vitals-dashboard': 'dashboard' };
+          const version = (dir) => JSON.parse(readFileSync(`packages/${dir}/package.json`, 'utf8')).version;
+          const lines = ['## Published to npm', ''];
+          for (const { name, version: v } of published) {
+            lines.push(`- [\`${name}@${v}\`](https://www.npmjs.com/package/${name}/v/${v}) ([changelog](${process.env.REPO_URL}/blob/${name}@${v}/packages/${dirs[name]}/CHANGELOG.md))`);
+          }
+          lines.push('', '## Single-file builds', '',
+            `- \`bzm-playwright-vitals.ts\`: collector ${version('collector')}`,
+            `- \`bzm-vitals-dashboard.mjs\` and \`bzm-vitals-dashboard.ts\`: dashboard ${version('dashboard')}`,
+            '', 'Built from this commit. See the README section "No npm access? Single-file builds".');
+          writeFileSync(`${process.env.RUNNER_TEMP}/notes.md`, lines.join('\n') + '\n');
+          const title = published.map(({ name, version: v }) => `${name} ${v}`).join(', ');
+          writeFileSync(`${process.env.RUNNER_TEMP}/title.txt`, title);
+          EOF
+          gh release create "$tag" \
+            --target "$GITHUB_SHA" \
+            --title "$(cat "$RUNNER_TEMP/title.txt")" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest \
+            packages/collector/dist-standalone/bzm-playwright-vitals.ts \
+            packages/dashboard/dist-standalone/bzm-vitals-dashboard.mjs \
+            packages/dashboard/dist-standalone/bzm-vitals-dashboard.ts
