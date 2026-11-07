@@ -60,7 +60,7 @@ the number, so an unmeasurable metric can never masquerade as `0`.
 |---|---|
 | `ok` | measured |
 | `unsupported` | the browser lacks the API (e.g. CLS on Firefox/WebKit) |
-| `no-interaction` | INP: the journey performed no qualifying interaction |
+| `no-interaction` | INP: the journey performed no interaction on this document (a click, tap or key press — however fast — counts as one and reports `ok`) |
 | `not-finalized` | LCP: the page closed before the browser finalized the value |
 | `error` | collection threw; the failure is recorded, not hidden |
 | `unknown` | written only by the dashboard's legacy adapter, never by this collector |
