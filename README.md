@@ -75,7 +75,12 @@ version. A mistyped flag or a flag missing its value exits with code 2 and a
 one-line reason.
 
 Open `report.html` in any browser. Send it to anyone — the reader needs no
-BlazeMeter account, and the file works offline forever.
+BlazeMeter account, and the file works offline forever. The file carries the
+data once, compressed, plus the code that draws the report, so it stays small
+(a 20,000-measurement run is about 1–2 MB). The browser builds the report
+when the file opens. It needs JavaScript and a browser from 2023 or later
+(any current Chrome, Edge, Firefox or Safari). Without them the file still
+shows the Route table at p75 with coverage, and says why the rest is missing.
 
 > 🔴 **Never commit your API key.** Keep `api-key.json` out of git
 > (this repo's `.gitignore` already covers it). A leaked key is a live

@@ -4,7 +4,9 @@
 // emitted HTML in Chromium over file:// and asserts the browser saw no CSP
 // violation and made no request other than the file itself — and that the
 // page's interactions (the include-failed toggle, a drill-down) still work
-// under that policy.
+// under that policy — including the in-browser render itself (E1): unpacking
+// the gzip blob with DecompressionStream and building the view need nothing
+// the policy forbids (no fetch, no blob:/data: URL, no worker).
 //
 // Skips with a reason when no Chromium is installed for Playwright.
 
@@ -19,6 +21,7 @@ import { aggregateRoutes, joinOutcomes, markColdStarts } from '../src/aggregate.
 import type { AttributedOutcome, AttributedSample } from '../src/attribute.js';
 import type { ReportData } from '../src/report.js';
 import { renderHtml } from '../src/render.js';
+import { SETTLED } from './helpers/browser.js';
 
 const CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:";
@@ -156,6 +159,8 @@ async function openReport(browser: Browser, html: string, dir: string): Promise<
   });
   page.on('requestfailed', (r) => seen.failed.push(`${r.url()} ${r.failure()?.errorText ?? ''}`));
   await page.goto(fileUrl, { waitUntil: 'load' });
+  // The report renders in the browser (E1): wait for it to settle.
+  await page.waitForSelector(SETTLED, { state: 'attached' });
   return { page, seen };
 }
 
@@ -185,6 +190,8 @@ describe.skipIf(!haveChromium)('CSP — the browser enforces zero external reque
   it('loads with no CSP violation and no request but the file itself; toggle and drill-down work', async () => {
     const { page, seen } = await openReport(browser, renderHtml(fixture()), dir);
     try {
+      // The interactive report rendered — under the policy.
+      await expect(page.getAttribute('#bzm-app', 'data-bzm-state')).resolves.toBe('ready');
       // The include-failed toggle: included variant shown by default; flipping
       // it shows the excluded variant, and back.
       const toggle = page.locator('#bzm-include-failed');

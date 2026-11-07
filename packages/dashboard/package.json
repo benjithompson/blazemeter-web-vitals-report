@@ -40,9 +40,10 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsc --build",
+    "build": "npm run build:browser && tsc --build",
+    "build:browser": "tsx scripts/build-browser.ts",
     "build:standalone": "tsx scripts/build-standalone.ts",
-    "typecheck": "tsc --build",
+    "typecheck": "npm run build:browser && tsc --build",
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },

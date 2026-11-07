@@ -6,23 +6,18 @@
 // esbuild bundles src/cli.ts with bzm-vitals-format inlined from its SOURCE (never a stale
 // dist/), on every run. Both files carry the same JavaScript; the .ts adds // @ts-nocheck. The
 // build FAILS if the bundle imports anything but node:* builtins, since the point is no npm
-// install. The artifacts are gitignored; test/standalone.test.ts rebuilds them first.
+// install. The artifacts are gitignored; test/standalone.test.ts rebuilds them first. The
+// report's inline browser bundle (scripts/build-browser.ts) is regenerated first, so it is fresh.
 
-import { build, type Plugin } from 'esbuild';
+import { build } from 'esbuild';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { buildBrowserBundle, formatFromSource } from './build-browser.ts';
 
 const DASHBOARD_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
-const FORMAT_SRC = join(DASHBOARD_DIR, '..', 'format', 'src', 'index.ts');
 const OUT_FILE = join(DASHBOARD_DIR, 'dist-standalone', 'bzm-vitals-dashboard.ts');
 const OUT_FILE_MJS = OUT_FILE.replace(/\.ts$/, '.mjs');
-
-/** Resolve the workspace format package to its source file, so the bundle can never lag it. */
-const formatFromSource: Plugin = {
-  name: 'bzm-vitals-format-from-source',
-  setup: (b) => void b.onResolve({ filter: /^bzm-vitals-format$/ }, () => ({ path: FORMAT_SRC })),
-};
 
 /** Bundle `entry` to ESM JavaScript (no hashbang); throws if any import but node:* survives. */
 export async function bundle(entry: string): Promise<string> {
@@ -58,6 +53,7 @@ export async function buildStandalone(): Promise<StandaloneBuild> {
     '//   packages/dashboard/scripts/build-standalone.ts   (npm run build:standalone)',
     '',
   ].join('\n');
+  await buildBrowserBundle();
   const js = await bundle(join(DASHBOARD_DIR, 'src', 'cli.ts'));
   const source = `// @ts-nocheck\n${header('bzm-vitals-dashboard.ts', 'npx tsx bzm-vitals-dashboard.ts')}${js}`;
   const mjsSource = `#!/usr/bin/env node\n${header('bzm-vitals-dashboard.mjs', 'node bzm-vitals-dashboard.mjs')}${js}`;

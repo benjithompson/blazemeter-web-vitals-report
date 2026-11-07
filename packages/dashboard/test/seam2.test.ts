@@ -25,7 +25,7 @@ import { runCli } from '../src/cli.js';
 import { jsonResponse, bytesResponse, recordingTransport } from './helpers/transport.js';
 import { makeZip } from './helpers/zip.js';
 import { readZipEntries } from '../src/zip.js';
-import { parseBlob } from './helpers/blob.js';
+import { inlineScript, parseBlob, staticMarkup } from './helpers/blob.js';
 
 const PROBE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'probe');
 const PROBE_A = 'r-v4-6a596ee06d5a9077555455'; // us-west-1
@@ -151,14 +151,15 @@ describe('Seam 2 — probe Report (real bytes, two Engines, zero Samples)', () =
     expect(namesA.length).toBeGreaterThan(0);
     expect(namesA).toEqual(namesB); // the collision is real
 
-    // No vitals anywhere → "no samples", never a 0 — STATICALLY rendered:
-    // the byte-test matches the server-emitted element, and the inline script
-    // carries no such text (it decides nothing).
+    // No vitals anywhere → "no samples", never a 0 — STATICALLY rendered: the
+    // server-emitted fallback says it, so it reads even with JavaScript off.
+    // (The inline bundle carries the same UI string: since E1 the browser
+    // renders the interactive report with the same markup code.)
     expect(data.samples).toHaveLength(0);
-    expect(html).toContain('<p class="no-samples">');
-    expect(html).toMatch(/no samples/i);
-    const inlineScript = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
-    expect(inlineScript).not.toMatch(/no samples/i);
+    const fallback = staticMarkup(html);
+    expect(fallback).toContain('<p class="no-samples">');
+    expect(fallback).toMatch(/no samples/i);
+    expect(fallback).not.toMatch(/\b0 ms\b/);
   });
 });
 
@@ -274,18 +275,27 @@ describe('Seam 2 — canonical Samples across two Engines with colliding basenam
     expect(html).not.toMatch(/<link[^>]+\bhref\s*=\s*["']?https?:/i);
     expect(html).not.toMatch(/<img[^>]+\bsrc\s*=\s*["']?https?:/i);
     expect(html).not.toMatch(/@import\s/i);
-    // No remote fetch/XHR from the inline script.
+    // No remote fetch/XHR from the inline script — nor any way to load
+    // anything at all: no fetch(), no worker, no blob:/data: URL.
+    const script = inlineScript(html);
     expect(html).not.toMatch(/fetch\(\s*["']https?:/i);
     expect(html).not.toMatch(/XMLHttpRequest/);
+    expect(script).not.toMatch(/\bfetch\s*\(|\bWorker\b|createObjectURL|importScripts|\beval\s*\(/);
+    expect(script).not.toMatch(/["'`](?:blob|data):/);
 
-    // No pre-signed URL ever lands in the output.
-    expect(html).not.toContain('storage.blazemeter.com');
-    expect(html).not.toContain('Signature=');
+    // The scan covers the bytes AND the decompressed blob: since E1 the data
+    // is gzipped, so a byte search alone could no longer see into it.
+    const decoded = JSON.stringify(parseBlob(html));
+    for (const text of [html, decoded]) {
+      // No pre-signed URL ever lands in the output.
+      expect(text).not.toContain('storage.blazemeter.com');
+      expect(text).not.toContain('Signature=');
 
-    // No api-key material — the same strings the credentials loader read.
-    // (Compared, never printed.)
-    expect(html.includes(STUB_ENV.BLAZEMETER_API_KEY_ID!)).toBe(false);
-    expect(html.includes(STUB_ENV.BLAZEMETER_API_KEY_SECRET!)).toBe(false);
+      // No api-key material — the same strings the credentials loader read.
+      // (Compared, never printed.)
+      expect(text.includes(STUB_ENV.BLAZEMETER_API_KEY_ID!)).toBe(false);
+      expect(text.includes(STUB_ENV.BLAZEMETER_API_KEY_SECRET!)).toBe(false);
+    }
   });
 
   it('prints the archived-Report latency notice pre-fetch on a cache miss — and never on a warm cache', async () => {
