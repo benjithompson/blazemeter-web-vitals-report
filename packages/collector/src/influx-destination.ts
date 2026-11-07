@@ -30,6 +30,28 @@ export interface InfluxMappingContext {
   location: string;
   /** The Engine tier, or null to AGGREGATE per location (omit the engine tag entirely). */
   engine: string | null;
+  /** This Engine's numeric index — the per-Engine part of the timestamp offset. */
+  engineIndex: number;
+}
+
+/**
+ * The point time, in ns: `ts_ms·1e6 + (engineIndex·1000 + workerIndex) % 1e6`.
+ *
+ * Influx identifies a point by (measurement, tag set, timestamp) and silently OVERWRITES a
+ * second write with the same identity. Two Samples measured in the same millisecond with the
+ * same tags — two Engines in one location (aggregate mode has no engine tag), or two workers
+ * — would otherwise collapse into one. The sub-millisecond offset is deterministic and
+ * distinct for every (Engine, worker) writer while both indices stay under 1000, and never
+ * moves the point out of its millisecond, so a query at ms resolution still reads Sample.ts.
+ * BigInt because ns epochs (~1.7e18) exceed Number.MAX_SAFE_INTEGER.
+ */
+export function timestampNs(tsMs: number, engineIndex: number, workerIndex: number): bigint {
+  const offset = (nonNegativeInt(engineIndex) * 1000 + nonNegativeInt(workerIndex)) % 1_000_000;
+  return BigInt(Math.floor(tsMs)) * BigInt(1_000_000) + BigInt(offset);
+}
+
+function nonNegativeInt(n: number): number {
+  return Number.isInteger(n) && n >= 0 ? n : 0;
 }
 
 /**
@@ -49,10 +71,11 @@ function fieldValue(metric: Metric): number | null {
  * Project one Sample onto a single wide-format Point — one field per ok vital, keyed by the
  * lowercase vital name (ttfb/fcp/lcp/cls/inp, exactly the Sample.vitals keys). Returns null
  * when NO vital is ok (an empty field set is not a valid line — the writer would skip it, so
- * we never build it). Timestamp is Sample.ts verbatim (epoch-ms; the writer posts at
- * precision=ms). Tags are the bounded dimensions only: route, location, project, title — and
- * engine when broken out. Load-generation mechanics (worker/repeat) are deliberately NOT
- * tags: they would fragment series for no analytical value.
+ * we never build it). Timestamp is ns (see timestampNs; the writer posts at precision=ns).
+ * Tags are the bounded dimensions: route, location, project, title, worker — and engine when
+ * broken out. `worker` is there so concurrent workers' points stay distinct; its cardinality
+ * is bounded by --workers, and it is not an analysis dimension (aggregate across it). `repeat`
+ * is deliberately NOT a tag: it would fragment series for no analytical value.
  */
 export function sampleToPoint(sample: Sample, ctx: InfluxMappingContext): Point | null {
   const fields: Record<string, number> = {};
@@ -67,6 +90,7 @@ export function sampleToPoint(sample: Sample, ctx: InfluxMappingContext): Point 
     location: ctx.location,
     project: sample.test.project,
     title: sample.test.title,
+    worker: String(sample.test.worker),
   };
   if (ctx.engine !== null) tags.engine = ctx.engine;
 
@@ -74,7 +98,7 @@ export function sampleToPoint(sample: Sample, ctx: InfluxMappingContext): Point 
     measurement: ctx.measurement,
     tags,
     fields,
-    timestamp: sample.ts,
+    timestamp: timestampNs(sample.ts, ctx.engineIndex, sample.test.worker),
   };
 }
 
@@ -118,6 +142,18 @@ export function resolveInfluxConfig(env: Env): InfluxConfig | null {
   return { url, org, bucket, token };
 }
 
+/**
+ * This Engine's numeric index for the timestamp offset: Taurus's 1-based per-Engine
+ * TAURUS_SESSIONS_INDEX (unique per Engine in a Report — the same var the engine tier's
+ * `#N` label derives from), else 0 for a local run. The BZM_VITALS_ENGINE override is a
+ * free-form LABEL, not an index, so it does not feed this.
+ */
+export function resolveEngineIndex(env: Env): number {
+  const raw = env.TAURUS_SESSIONS_INDEX?.trim();
+  if (raw === undefined || !/^\d+$/.test(raw)) return 0;
+  return Number(raw);
+}
+
 /** The measurement for the vitals feed — override via BZM_INFLUX_MEASUREMENT, else default. */
 export function resolveMeasurement(env: Env): string {
   return env.BZM_INFLUX_MEASUREMENT?.trim() || DEFAULT_MEASUREMENT;
@@ -152,6 +188,7 @@ export class InfluxDestination implements Destination {
   private readonly location: string;
   /** The Engine tag, or null to aggregate per location (default). */
   private readonly engine: string | null;
+  private readonly engineIndex: number;
   private readonly writer: InfluxWriter | null;
 
   constructor(deps: InfluxDeps = {}) {
@@ -163,10 +200,11 @@ export class InfluxDestination implements Destination {
     this.measurement = resolveMeasurement(env);
     this.location = identity.location;
     this.engine = identity.engine;
+    this.engineIndex = resolveEngineIndex(env);
     // The writer is built only when a config exists; a disabled sink allocates nothing.
     this.writer =
       this.config !== null
-        ? new InfluxWriter({ config: this.config, precision: 'ms', fetch: deps.fetch, timeoutMs: deps.timeoutMs })
+        ? new InfluxWriter({ config: this.config, precision: 'ns', fetch: deps.fetch, timeoutMs: deps.timeoutMs })
         : null;
   }
 
@@ -186,6 +224,7 @@ export class InfluxDestination implements Destination {
       measurement: this.measurement,
       location: this.location,
       engine: this.engine,
+      engineIndex: this.engineIndex,
     });
     if (points.length === 0) return;
     await this.writer.write(points);

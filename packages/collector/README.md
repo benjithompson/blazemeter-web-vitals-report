@@ -145,6 +145,35 @@ Using different secret names? Point the collector at them with
 `BZM_VITALS_KEY_ID_ENV` / `BZM_VITALS_KEY_SECRET_ENV` (each carries only a var
 *name*, never the value) — e.g. `BZM_VITALS_KEY_ID_ENV: BZM_SECRET_myid`.
 
+## Live push to InfluxDB (optional)
+
+The same live push can also write to an InfluxDB 2.x bucket (or the 3.x
+`/api/v2/write` compatibility endpoint), alongside BlazeMeter or on its own. It
+turns on when all four connection parts are set, and is just as best-effort.
+
+| env var | purpose |
+|---|---|
+| `BZM_INFLUX_URL` / `BZM_INFLUX_ORG` / `BZM_INFLUX_BUCKET` | where to write; all required |
+| `BZM_INFLUX_TOKEN` | write token (or the managed secret `influxtoken` → `BZM_SECRET_influxtoken`, or name another var with `BZM_INFLUX_TOKEN_ENV`) |
+| `BZM_INFLUX_MEASUREMENT` | measurement name; default `web_vitals` |
+
+Each Sample becomes **one point** in the `web_vitals` measurement:
+
+- **Fields:** one per vital that was measured (`ttfb`, `fcp`, `lcp`, `cls`,
+  `inp`), as native floats. A vital that could not be measured is absent, never `0`.
+- **Tags:** `route`, `location`, `project`, `title` and `worker`, plus `engine`
+  when `BZM_VITALS_PER_ENGINE` is on. `worker` is the Playwright worker index.
+  Its cardinality is bounded by `--workers`, and it is there to keep points
+  apart, not to group by, so aggregate across it in queries. A newline (`\n` or
+  `\r`) in a tag value such as a title becomes a space, because line protocol
+  cannot carry one.
+- **Timestamp:** written at **ns precision** as
+  `ts_ms × 1e6 + (engineIndex × 1000 + workerIndex) % 1e6`. The offset is
+  deterministic and unique per Engine and worker, so Samples measured in the
+  same millisecond never overwrite each other, and it never moves a point out
+  of its millisecond. `engineIndex` is Taurus's `TAURUS_SESSIONS_INDEX` (0 when
+  running locally).
+
 ## 🔴 Keep your API key out of git
 
 The collector needs no credentials. The **dashboard** does, and BlazeMeter API

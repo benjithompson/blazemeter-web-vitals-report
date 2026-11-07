@@ -1,6 +1,7 @@
 // The Docker integration seam: proves the wide-format points the InfluxDestination writes
 // actually round-trip a REAL InfluxDB 2.x bucket — native float64 fields land as written,
-// the bounded tags land as tags, and precision=ms preserves the millisecond timestamp.
+// the bounded tags land as tags, and the ns write (offset 0 here: no Engine index,
+// worker 0) preserves the millisecond timestamp.
 //
 // This is the ONLY test that touches a network, so it SKIPS unless a live Influx is
 // configured (BZM_INFLUX_URL + BZM_INFLUX_TOKEN present). Bring one up with:
@@ -54,7 +55,7 @@ async function queryFlux(flux: string): Promise<string> {
 }
 
 describe.skipIf(!LIVE)('InfluxDestination — round-trips a real InfluxDB 2.x bucket', () => {
-  const TS = 1_700_000_123_456; // epoch ms; precision=ms must preserve it exactly
+  const TS = 1_700_000_123_456; // epoch ms; the ns write must preserve it exactly
 
   beforeAll(async () => {
     const d = new InfluxDestination({
@@ -94,7 +95,7 @@ describe.skipIf(!LIVE)('InfluxDestination — round-trips a real InfluxDB 2.x bu
     `);
     expect(csv).toContain('us-west-1'); // location tag
     expect(csv).toContain('chromium'); // project tag
-    // precision=ms means the point time is exactly our epoch-ms, rendered as RFC3339 ms
+    // with a zero offset the ns point time is exactly our epoch-ms, rendered as RFC3339
     // (a second-floored write would drop the .456 and fail this).
     const iso = new Date(TS).toISOString(); // 2023-11-14T22:15:23.456Z
     expect(iso).toMatch(/\.456Z$/); // guard the fixture keeps sub-second ms
