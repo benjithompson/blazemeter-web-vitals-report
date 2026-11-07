@@ -256,12 +256,16 @@ describe('BLAZEMETER_API_BASE', () => {
 
 describe('timeouts: a hung server fails the CLI fast, naming the host and nothing signed', () => {
   async function runAgainst(server: FakeServer, transport: Transport) {
-    vi.stubEnv('BLAZEMETER_API_BASE', server.base);
     const workDir = await mkdtemp(path.join(tmpdir(), 'bzm-d3-'));
     const started = Date.now();
     const err = await runCli({
       argv: ['--master', '33', '--out', path.join(workDir, 'r.html')],
-      env: { BLAZEMETER_API_KEY_ID: 'stub-id', BLAZEMETER_API_KEY_SECRET: 'stub-secret' },
+      // runCli reads BLAZEMETER_API_BASE from its own env (D1), not process.env.
+      env: {
+        BLAZEMETER_API_BASE: server.base,
+        BLAZEMETER_API_KEY_ID: 'stub-id',
+        BLAZEMETER_API_KEY_SECRET: 'stub-secret',
+      },
       transport,
       cacheRoot: path.join(workDir, 'cache'),
       log: () => {},

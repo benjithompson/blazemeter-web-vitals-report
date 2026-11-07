@@ -75,8 +75,8 @@ beforeAll(async () => {
   mjsSource = build.mjsSource;
 
   // The temp dir plays the download directory: the artifact is copied there and the
-  // child runs with it as cwd, so the standalone's cwd-based .artifact-cache default
-  // (its path contains neither packages/ nor node_modules/) resolves inside it.
+  // child runs with it as cwd, so the cwd-based .artifact-cache default resolves
+  // inside it.
   workDir = await mkdtemp(path.join(tmpdir(), 'bzm-standalone-'));
   standalonePath = path.join(workDir, 'bzm-vitals-dashboard.ts');
   await copyFile(build.outFile, standalonePath);

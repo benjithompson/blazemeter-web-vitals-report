@@ -143,14 +143,21 @@ already installed.
   records the page being left. It waits for the next paint first, so a click
   just before the navigation still counts for INP. The wait is usually a few
   milliseconds and is always bounded.
-- Re-running the dashboard for the same master is instant — artifacts are
-  cached locally in `.artifact-cache/` (also never committed).
+- Re-running the dashboard for a finished master is instant — artifacts are
+  cached in `./.artifact-cache/` under the directory you run it from (never
+  commit it). `--cache-dir <dir>` (or, without it, `BZM_VITALS_CACHE_DIR`)
+  puts the cache elsewhere, and `--refresh` fetches the master again. A master cached while
+  it was still running is re-checked on the next run.
 
 ## No npm access? Single-file builds
 
-Both pieces also ship as single generated files, attached to every
-[GitHub release](../../releases/latest) — for Engines with no registry access
-and for machines where `npm install` isn't an option:
+Both pieces also ship as single generated files, for Engines with no registry
+access and for machines where `npm install` isn't an option. Open the
+[latest GitHub release](../../releases/latest) and download them from its
+**Assets** list. Every release made by the release workflow carries all three
+files, built from the release commit. The release notes say which collector
+and dashboard versions they are, and each file's header comment repeats it.
+The files are not committed to the repository.
 
 - **`bzm-playwright-vitals.ts`** (collector): upload it next to your spec and
   change the import to the sibling file —
@@ -211,6 +218,15 @@ it does not fix the dashboard.
 
 `npx tsx …` downloads `tsx` from the registry when it is not installed yet.
 Run `npm install` in the repo first, after the fix above.
+
+## Releasing (maintainers)
+
+Versions and changelogs are managed with [Changesets](https://changesets.dev):
+add one with `npx changeset` in any PR that changes what users get. Merging the
+"Version Packages" PR that the release workflow keeps up to date publishes to
+npm (trusted publishing, with provenance) and creates the GitHub Release with
+the single-file builds. Details and the one-time npm setup:
+[`.changeset/README.md`](.changeset/README.md).
 
 ---
 

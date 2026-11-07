@@ -6,7 +6,8 @@
 // One command, one file, the data baked in. fetch → extract → adapt →
 // attribute → aggregate crudely → embed → emit. Cache-through: artifacts land
 // in the gitignored .artifact-cache, so a repeat run (or a run after the fetch
-// script) does zero network calls — and needs no credentials at all.
+// script) does zero network calls — and needs no credentials at all. A master
+// cached before it had ENDED is re-listed next run, fetching only what changed.
 //
 // Offline alternative: --artifacts <path> reads downloaded artifacts (a zip, an
 // unzipped folder, or a folder of either) and never touches the network or the
@@ -15,12 +16,13 @@
 // The bin entry is this thin wrapper; tests invoke runCli in-process with a
 // stubbed Transport and never touch the network.
 
-import { existsSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { loadCredentials, type Credentials, type Transport } from './http.js';
+import { loadCredentials, type Transport } from './http.js';
+import { resolveApiBase } from './api.js';
 import { cacheMaster, defaultCacheRoot } from './cache.js';
 import { assembleReportData, buildReportData, type ReportData } from './report.js';
 import { readLocalArtifacts } from './local.js';
@@ -46,14 +48,17 @@ const HELP = [
   '',
   'Input modes:',
   '  --master <masterId>         Fetch the Report from the BlazeMeter API and cache its',
-  '                              artifacts in .artifact-cache; a cached master re-runs',
-  '                              with no network and no credentials.',
+  '                              artifacts in the cache; a master cached after it ENDED',
+  '                              re-runs with no network and no credentials.',
   '  --artifacts <zip-or-folder> Read downloaded artifacts instead (one artifacts.zip,',
   '                              its unzipped folder, or a folder of either). No network,',
   '                              no credentials, no cache. --master then only names the Report.',
   '',
   'Options:',
   '  --out <report.html>         Where to write the report (required).',
+  '  --cache-dir <dir>           Cache directory (API mode); overrides BZM_VITALS_CACHE_DIR.',
+  '                              Default ./.artifact-cache under the current directory.',
+  '  --refresh                   Ignore the cache for this master and fetch it again.',
   '  -h, --help                  Print this help and exit.',
   '  --version                   Print the version and exit.',
   '',
@@ -61,6 +66,8 @@ const HELP = [
   '  BLAZEMETER_API_KEY          Path to an api-key.json holding {"id", "secret"}.',
   '  BLAZEMETER_API_KEY_ID       Key id and secret as discrete variables (CI);',
   '  BLAZEMETER_API_KEY_SECRET   used when BLAZEMETER_API_KEY is unset.',
+  '  BLAZEMETER_API_BASE         API host; default https://a.blazemeter.com.',
+  '  BZM_VITALS_CACHE_DIR        Cache directory, when --cache-dir is not given.',
 ].join('\n');
 
 /** A command-line mistake: the bin prints `message` alone (no stack) and exits
@@ -82,7 +89,7 @@ export interface RunCliOptions {
   env?: NodeJS.ProcessEnv;
   /** Injected by tests; the real run uses global fetch. */
   transport?: Transport;
-  /** Defaults to <repo-root>/.artifact-cache. */
+  /** Injected by tests; overrides --cache-dir and BZM_VITALS_CACHE_DIR. */
   cacheRoot?: string;
   /** Progress messages. Defaults to stderr; the HTML goes to --out, never stdout. */
   log?: (message: string) => void;
@@ -93,15 +100,16 @@ export interface RunCliOptions {
 export type CliArgs =
   | { source: 'help' }
   | { source: 'version' }
-  | { source: 'api'; masterId: string; outPath: string }
+  | { source: 'api'; masterId: string; outPath: string; cacheDir?: string; refresh?: true }
   | { source: 'local'; artifactsPath: string; masterId: string | null; outPath: string };
 
-/** The whole flag table. D1's `--cache-dir <dir>` (string) and `--refresh`
- *  (boolean) join here; each new flag also gets a line in HELP. */
+/** The whole flag table; each flag also gets a line in HELP. */
 const CLI_OPTIONS = {
   master: { type: 'string' },
   artifacts: { type: 'string' },
   out: { type: 'string' },
+  'cache-dir': { type: 'string' },
+  refresh: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean' },
 } as const satisfies ParseArgsConfig['options'];
@@ -159,7 +167,14 @@ export function parseCliArgs(argv: string[]): CliArgs {
     return { source: 'local', artifactsPath, masterId: masterId ?? null, outPath };
   }
   if (masterId === undefined) throw new CliUsageError(USAGE, 1);
-  return { source: 'api', masterId, outPath };
+  // Optional fields only when given, so a plain command parses as before.
+  return {
+    source: 'api',
+    masterId,
+    outPath,
+    ...(values['cache-dir'] !== undefined && { cacheDir: values['cache-dir'] }),
+    ...(values.refresh && { refresh: true as const }),
+  };
 }
 
 /** Run one command. `outPath` is null for --help / --version, which write
@@ -176,7 +191,7 @@ export async function runCli(opts: RunCliOptions): Promise<{ outPath: string | n
   const data =
     args.source === 'local'
       ? await buildFromLocal(args.artifactsPath, args.masterId, log)
-      : await buildFromApi(args.masterId, opts, log);
+      : await buildFromApi(args, opts, log);
   const { outPath } = args;
   await writeFile(outPath, renderHtml(data), 'utf8');
 
@@ -206,29 +221,31 @@ async function buildFromLocal(
 }
 
 async function buildFromApi(
-  masterId: string,
+  args: Extract<CliArgs, { source: 'api' }>,
   opts: RunCliOptions,
   log: (message: string) => void,
 ): Promise<ReportData> {
-  const cacheRoot = opts.cacheRoot ?? defaultCacheRoot();
-  const masterDir = path.join(cacheRoot, masterId);
-  const cached = existsSync(path.join(masterDir, 'manifest.json'));
+  const { masterId } = args;
+  const env = opts.env ?? process.env;
+  const cacheRoot = opts.cacheRoot ?? defaultCacheRoot({ env, cacheDir: args.cacheDir });
+  const apiBase = resolveApiBase(env);
 
-  // Credentials authenticate only the listing calls, so a fully cached master
-  // needs none — the warm path must work offline.
-  let creds: Credentials = { id: '', secret: '' };
-  if (!cached) {
-    creds = await loadCredentials(opts.env ?? process.env);
-    log(`fetching Report ${masterId} — an archived Report may take a moment (latency, not failure)`);
-  }
-
+  // Credentials authenticate only the listing calls, so they are loaded only
+  // if the network is needed: a finished, cached master runs offline.
   const manifest = await cacheMaster(masterId, {
-    creds,
+    creds: async () => {
+      const creds = await loadCredentials(env);
+      log(`fetching Report ${masterId} — an archived Report may take a moment (latency, not failure)`);
+      return creds;
+    },
     transport: opts.transport,
+    apiBase,
     cacheRoot,
+    refresh: args.refresh,
+    log,
   });
 
-  return buildReportData(manifest, masterDir);
+  return buildReportData(manifest, path.join(cacheRoot, masterId));
 }
 
 // Thin executable wrapper — everything above is invocable in-process.
