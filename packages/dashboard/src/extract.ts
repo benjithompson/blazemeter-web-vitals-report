@@ -1,4 +1,7 @@
-// Namespaced extraction — the load-bearing behaviour of issue #2.
+// Namespaced extraction — a DEBUG aid only, behind the CLI's --extract <dir>.
+// The report pipeline never extracts: it reads records out of each zip in
+// memory (local.ts readZipRecords). This writes a cached Engine's whole zip to
+// disk so a person can look inside it.
 //
 // Cross-Engine attachment basenames are IDENTICAL by construction (basename is
 // sha1 of the fixed absolute path Taurus passes to every Engine). Extracting two
@@ -10,7 +13,7 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { readZipEntries } from './zip.js';
+import { ALL_ENTRIES, readZipEntries } from './zip.js';
 
 export interface ExtractResult {
   /** destRoot/{sessionId} */
@@ -31,7 +34,7 @@ export async function extractNamespaced(
 ): Promise<ExtractResult> {
   const sessionDir = path.join(destRoot, sessionId);
   await mkdir(sessionDir, { recursive: true });
-  const entries = await readZipEntries(zipBytes);
+  const entries = await readZipEntries(zipBytes, ALL_ENTRIES);
   const files: string[] = [];
   for (const entry of entries) {
     // Flat: basename === entry name. path.basename guards a stray separator.

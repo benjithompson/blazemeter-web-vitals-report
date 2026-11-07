@@ -1,7 +1,10 @@
-// A tiny STORE-method (no compression) zip writer for building test zips in
-// memory. src/zip.ts reads STORE zips and verifies CRC32, so this is enough to
-// exercise the extractor without shelling out. NOT used for the committed
+// A tiny zip writer for building test zips in memory: STORE (no compression)
+// by default, DEFLATE per entry when asked — the method real artifacts.zip
+// files use, and the one that makes src/zip.ts call inflateRawSync. Enough to
+// exercise the reader without shelling out. NOT used for the committed
 // fixture — that is real fetched bytes (see scripts/build-probe-fixture.ts).
+
+import { deflateRawSync } from 'node:zlib';
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -22,44 +25,51 @@ function crc32(buf: Buffer): number {
 export interface ZipInput {
   name: string;
   data: Buffer;
+  /** DEFLATE this entry (method 8) instead of storing it. */
+  deflate?: boolean;
+  /** Write this CRC instead of the true one — a corrupt entry. */
+  crc?: number;
 }
 
-/** Build a flat STORE-method zip from entries. */
+/** Build a flat zip from entries. */
 export function makeZip(entries: ZipInput[]): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let offset = 0;
 
-  for (const { name, data } of entries) {
+  for (const entry of entries) {
+    const { name, data } = entry;
     const nameBuf = Buffer.from(name, 'utf8');
-    const crc = crc32(data);
+    const crc = entry.crc ?? crc32(data);
+    const method = entry.deflate ? 8 : 0;
+    const body = entry.deflate ? deflateRawSync(data) : data;
 
     const local = Buffer.alloc(30 + nameBuf.length);
     local.writeUInt32LE(0x04034b50, 0); // local file header sig
     local.writeUInt16LE(20, 4); // version needed
     local.writeUInt16LE(0, 6); // flags
-    local.writeUInt16LE(0, 8); // method: store
+    local.writeUInt16LE(method, 8); // method: 0 store, 8 deflate
     local.writeUInt16LE(0, 10); // mod time
     local.writeUInt16LE(0, 12); // mod date
     local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18); // compressed size
+    local.writeUInt32LE(body.length, 18); // compressed size
     local.writeUInt32LE(data.length, 22); // uncompressed size
     local.writeUInt16LE(nameBuf.length, 26);
     local.writeUInt16LE(0, 28); // extra len
     nameBuf.copy(local, 30);
 
-    locals.push(local, data);
+    locals.push(local, body);
 
     const central = Buffer.alloc(46 + nameBuf.length);
     central.writeUInt32LE(0x02014b50, 0); // central dir sig
     central.writeUInt16LE(20, 4); // version made by
     central.writeUInt16LE(20, 6); // version needed
     central.writeUInt16LE(0, 8); // flags
-    central.writeUInt16LE(0, 10); // method
+    central.writeUInt16LE(method, 10); // method
     central.writeUInt16LE(0, 12);
     central.writeUInt16LE(0, 14);
     central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(body.length, 20);
     central.writeUInt32LE(data.length, 24);
     central.writeUInt16LE(nameBuf.length, 28);
     central.writeUInt16LE(0, 30); // extra
@@ -71,7 +81,7 @@ export function makeZip(entries: ZipInput[]): Buffer {
     nameBuf.copy(central, 46);
     centrals.push(central);
 
-    offset += local.length + data.length;
+    offset += local.length + body.length;
   }
 
   const centralStart = offset;

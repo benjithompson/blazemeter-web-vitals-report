@@ -1,14 +1,15 @@
 // The fetch/cache layer. Point it at a master id; it writes every Engine's
-// extracted artifact into the cache and records a manifest so a second run
-// against a finished master does zero network calls.
+// artifacts.zip into the cache and records a manifest so a second run against
+// a finished master does zero network calls.
 //
 // Layout (cacheRoot: see defaultCacheRoot):
 //   {cacheRoot}/{masterId}/manifest.json
-//   {cacheRoot}/{masterId}/{sessionId}.zip     <- raw fetched bytes
-//   {cacheRoot}/{masterId}/{sessionId}/...      <- extracted, namespaced by sessionId
+//   {cacheRoot}/{masterId}/{sessionId}.zip     <- raw fetched bytes, one per Engine
 //
-// Raw zip bytes are cached alongside the extraction so that extraction-logic
-// changes never force a refetch — re-extraction runs from the local zip.
+// Nothing is extracted to disk. Each zip is read in memory by the same lazy
+// reader local import uses (local.ts readZipRecords): only record entries are
+// inflated, and that one read both validates the zip and yields its records,
+// namespaced by sessionId because each zip IS one Engine.
 //
 // Trust rules:
 //   - A manifest is trusted (no network) only if the master had ENDED when it
@@ -24,8 +25,8 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fetchArtifactBytes, getMaster, getMasterStatus, type SessionInfo } from './api.js';
-import { extractNamespaced } from './extract.js';
-import { readZipEntries } from './zip.js';
+import { readZipRecords, type ZipRecords } from './local.js';
+import type { EngineRecords } from './report.js';
 import type { Credentials, Transport } from './http.js';
 
 export interface SessionCacheEntry {
@@ -36,8 +37,15 @@ export interface SessionCacheEntry {
   artifact: 'present' | 'no-artifact';
   /** Relative to the master dir. Absent when artifact === 'no-artifact'. */
   zipPath?: string;
-  /** Count of files extracted (flat entry count). */
+  /** Count of file entries in the zip, records or not. */
   fileCount?: number;
+}
+
+/** A cached master: its manifest plus every Engine's records, read in memory. */
+export interface CachedMaster {
+  manifest: MasterManifest;
+  /** In manifest.sessions order; a no-artifact Engine has no files. */
+  engines: EngineRecords[];
 }
 
 export interface MasterManifest {
@@ -135,18 +143,18 @@ async function writeAtomic(file: string, data: string | Uint8Array): Promise<voi
   await rename(tmp, file);
 }
 
-/** A cached zip's bytes if it parses (CRC-checked); otherwise delete it,
- *  warn, and return null so the caller fetches it again. */
+/** A cached zip's records if it reads (bounds-checked; records CRC-checked);
+ *  otherwise delete it, warn, and return null so the caller fetches it again.
+ *  The one read both validates the zip and yields its records. */
 async function readCachedZip(
   zipAbs: string,
   sessionId: string,
   log: (message: string) => void,
-): Promise<Buffer | null> {
+): Promise<ZipRecords | null> {
   if (!existsSync(zipAbs)) return null;
   const bytes = await readFile(zipAbs);
   try {
-    await readZipEntries(bytes);
-    return bytes;
+    return await readZipRecords(bytes, zipAbs);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     log(`warning: cached artifacts for ${sessionId} are truncated or corrupt (${why}); deleting and fetching again`);
@@ -175,15 +183,16 @@ function limiter(max: number) {
 }
 
 /**
- * Ensure a master's every Engine artifact is on disk, extracted and namespaced
- * by sessionId. A trusted manifest (the master had ENDED) means no network
+ * Ensure a master's every Engine artifact is cached, and read each Engine's
+ * records out of its zip in memory — one read per zip, which is also the
+ * integrity check. A trusted manifest (the master had ENDED) means no network
  * call; otherwise sessions are re-listed and each missing, unfinished or
- * changed one fetched. Re-extraction always runs from the cached zip.
+ * changed one fetched.
  */
-export async function cacheMaster(
+export async function cacheMasterRecords(
   masterId: string,
   opts: CacheMasterOptions,
-): Promise<MasterManifest> {
+): Promise<CachedMaster> {
   const cacheRoot = opts.cacheRoot ?? defaultCacheRoot();
   const log = opts.log ?? ((message: string) => console.error(message));
   const masterDir = path.join(cacheRoot, masterId);
@@ -197,19 +206,22 @@ export async function cacheMaster(
   const previous = opts.refresh ? null : await loadManifest(masterDir);
 
   if (previous && isEnded(masterStatusOf(previous))) {
-    // Finished master — re-extract from local zips, no network, provided
-    // every zip is still whole.
-    const zips: Array<[SessionCacheEntry, Buffer]> = [];
+    // Finished master — read the local zips, no network, provided every zip
+    // is still whole.
+    const read = new Map<string, ZipRecords>();
     let whole = true;
     for (const s of previous.sessions) {
       if (s.artifact !== 'present' || !s.zipPath) continue;
-      const bytes = await readCachedZip(path.join(masterDir, s.zipPath), s.sessionId, log);
-      if (bytes) zips.push([s, bytes]);
+      const records = await readCachedZip(path.join(masterDir, s.zipPath), s.sessionId, log);
+      if (records) read.set(s.sessionId, records);
       else whole = false;
     }
     if (whole) {
-      for (const [s, bytes] of zips) await extractNamespaced(bytes, s.sessionId, masterDir);
-      return previous;
+      for (const s of previous.sessions) await dropLegacyExtraction(masterDir, s.sessionId);
+      return {
+        manifest: previous,
+        engines: previous.sessions.map((s) => engineOf(s, read.get(s.sessionId))),
+      };
     }
   }
 
@@ -223,7 +235,7 @@ export async function cacheMaster(
 
   const download = limiter(MAX_PARALLEL_DOWNLOADS);
   const settled = await Promise.allSettled(
-    sessions.map(async (session): Promise<SessionCacheEntry> => {
+    sessions.map(async (session): Promise<[SessionCacheEntry, ZipRecords | undefined]> => {
       const zipPath = `${session.id}.zip`;
       const zipAbs = path.join(masterDir, zipPath);
       const before = previous?.sessions.find((s) => s.sessionId === session.id);
@@ -232,44 +244,71 @@ export async function cacheMaster(
       const reusable =
         !opts.refresh && isEnded(session.status) && (!before || before.status === session.status);
       const base = { sessionId: session.id, status: session.status, locationId: session.locationId };
+      await dropLegacyExtraction(masterDir, session.id);
 
       if (reusable && before?.artifact === 'no-artifact') {
-        return { ...base, artifact: 'no-artifact' };
+        return [{ ...base, artifact: 'no-artifact' }, undefined];
       }
       const cached = reusable ? await readCachedZip(zipAbs, session.id, log) : null;
       if (cached) {
-        const { files } = await extractNamespaced(cached, session.id, masterDir);
-        return { ...base, artifact: 'present', zipPath, fileCount: files.length };
+        return [{ ...base, artifact: 'present', zipPath, fileCount: cached.entryCount }, cached];
       }
 
       const fetched = await download(() => fetchArtifactBytes(session.id, api));
-      // Start from an empty session dir, so nothing from an older fetch lingers.
-      await rm(path.join(masterDir, session.id), { recursive: true, force: true });
       if (!fetched) {
         // No artifacts.zip — a normal outcome (or not yet produced), recorded as such.
         await rm(zipAbs, { force: true });
-        return { ...base, artifact: 'no-artifact' };
+        return [{ ...base, artifact: 'no-artifact' }, undefined];
       }
-      // Extraction parses and CRC-checks the bytes before they are kept.
-      const { files } = await extractNamespaced(fetched, session.id, masterDir);
+      // Reading the records checks the bytes before they are kept.
+      const records = await readZipRecords(fetched, `the artifacts.zip of ${session.id}`);
       await writeAtomic(zipAbs, fetched);
-      return { ...base, artifact: 'present', zipPath, fileCount: files.length };
+      return [{ ...base, artifact: 'present', zipPath, fileCount: records.entryCount }, records];
     }),
   );
   const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed) throw failed.reason;
-  const entries = settled.map((r) => (r as PromiseFulfilledResult<SessionCacheEntry>).value);
+  const results = settled.map(
+    (r) => (r as PromiseFulfilledResult<[SessionCacheEntry, ZipRecords | undefined]>).value,
+  );
 
   const manifest: MasterManifest = {
     masterId,
     fetchedAt: new Date().toISOString(),
     reportName: master.name,
     masterStatus: deriveMasterStatus(listing.status, sessions),
-    sessions: entries,
+    sessions: results.map(([entry]) => entry),
   };
   await writeAtomic(path.join(masterDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-  return manifest;
+  return { manifest, engines: results.map(([entry, records]) => engineOf(entry, records)) };
 }
+
+/** Like cacheMasterRecords, for callers that want only the manifest. */
+export async function cacheMaster(
+  masterId: string,
+  opts: CacheMasterOptions,
+): Promise<MasterManifest> {
+  return (await cacheMasterRecords(masterId, opts)).manifest;
+}
+
+function engineOf(entry: SessionCacheEntry, records: ZipRecords | undefined): EngineRecords {
+  return {
+    sessionId: entry.sessionId,
+    locationId: entry.locationId,
+    status: entry.status,
+    artifact: entry.artifact,
+    files: records?.files ?? [],
+  };
+}
+
+/** Caches written before D5 also held each zip extracted to {sessionId}/;
+ *  nothing reads that copy any more, so it is removed. */
+async function dropLegacyExtraction(masterDir: string, sessionId: string): Promise<void> {
+  // Only ever a plain child of the master dir — never the dir itself, or above it.
+  if (!sessionId || sessionId !== path.basename(sessionId) || sessionId.startsWith('.')) return;
+  await rm(path.join(masterDir, sessionId), { recursive: true, force: true });
+}
+
 
 /** Remove a master's cache — used by tests, not the script. */
 export async function clearMasterCache(masterId: string, cacheRoot: string): Promise<void> {

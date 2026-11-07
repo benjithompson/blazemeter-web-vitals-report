@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { copyFile, mkdir, mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { cacheMaster, defaultCacheRoot } from '../src/cache.js';
+import { SAMPLE_ATTACHMENT_PREFIX as S } from 'bzm-vitals-format';
+import { cacheMaster, cacheMasterRecords, defaultCacheRoot, type CachedMaster } from '../src/cache.js';
 import { createTransport } from '../src/http.js';
 import { runCli } from '../src/cli.js';
 import { jsonResponse, bytesResponse, recordingTransport } from './helpers/transport.js';
@@ -14,6 +15,14 @@ import { makeZip } from './helpers/zip.js';
 import type { Credentials } from '../src/http.js';
 
 const creds: Credentials = { id: 'k', secret: 's' };
+
+/** The text of one Engine's record `${S}-${name}`, as the cache read it in memory. */
+async function recordText(cached: CachedMaster, sessionId: string, name: string): Promise<string> {
+  const engine = cached.engines.find((e) => e.sessionId === sessionId);
+  const file = engine?.files.find((f) => f.file === `${S}-${name}`);
+  if (!file) throw new Error(`no record ${name} for ${sessionId}`);
+  return file.read();
+}
 const STATUS_RE = /\/masters\/([^/]+)\/status$/;
 const LOGS_RE = /\/sessions\/([^/]+)\/reports\/logs$/;
 
@@ -56,35 +65,37 @@ afterEach(async () => {
 });
 
 describe('cacheMaster', () => {
-  it('enumerates sessions, extracts namespaced, records the no-artifact Engine', async () => {
+  it('enumerates sessions, reads records namespaced by sessionId, records the no-artifact Engine', async () => {
     const zipA = makeZip([
-      { name: 'repeat0.json', data: Buffer.from('a0') },
-      { name: 'repeat18.json', data: Buffer.from('a18') },
+      { name: `${S}-repeat0.json`, data: Buffer.from('a0') },
+      { name: `${S}-repeat18.json`, data: Buffer.from('a18') },
+      { name: 'bzt.log', data: Buffer.from('not a record') },
     ]);
     const { transport } = recordingTransport(twoEngineHandler(zipA));
 
-    const manifest = await cacheMaster('82724289', { creds, transport, cacheRoot });
+    const cached = await cacheMasterRecords('82724289', { creds, transport, cacheRoot });
+    const { manifest } = cached;
 
     expect(manifest.sessions).toHaveLength(2);
     const aaa = manifest.sessions.find((s) => s.sessionId === 'r-v4-aaa')!;
     const bbb = manifest.sessions.find((s) => s.sessionId === 'r-v4-bbb')!;
     expect(aaa.artifact).toBe('present');
-    expect(aaa.fileCount).toBe(2);
+    expect(aaa.fileCount).toBe(3);
     expect(bbb.artifact).toBe('no-artifact');
 
-    // Extracted, namespaced by sessionId.
+    // Records read in memory, under their own Engine; only records.
+    expect(cached.engines.map((e) => [e.sessionId, e.files.map((f) => f.file)])).toEqual([
+      ['r-v4-aaa', [`${S}-repeat0.json`, `${S}-repeat18.json`]],
+      ['r-v4-bbb', []],
+    ]);
+    expect(await recordText(cached, 'r-v4-aaa', 'repeat18.json')).toBe('a18');
+    // Raw zip bytes cached, and nothing extracted beside them.
     const masterDir = path.join(cacheRoot, '82724289');
-    expect(await readdir(path.join(masterDir, 'r-v4-aaa'))).toEqual(
-      expect.arrayContaining(['repeat0.json', 'repeat18.json']),
-    );
-    // Raw zip bytes cached too.
-    expect(existsSync(path.join(masterDir, 'r-v4-aaa.zip'))).toBe(true);
-    // No zip for the dead Engine.
-    expect(existsSync(path.join(masterDir, 'r-v4-bbb.zip'))).toBe(false);
+    expect((await readdir(masterDir)).sort()).toEqual(['manifest.json', 'r-v4-aaa.zip']);
   });
 
   it('does no network calls on a second run against a cached master', async () => {
-    const zipA = makeZip([{ name: 'repeat0.json', data: Buffer.from('a0') }]);
+    const zipA = makeZip([{ name: `${S}-repeat0.json`, data: Buffer.from('a0') }]);
     const first = recordingTransport(twoEngineHandler(zipA));
     await cacheMaster('82724289', { creds, transport: first.transport, cacheRoot });
     expect(first.calls.length).toBeGreaterThan(0);
@@ -93,15 +104,26 @@ describe('cacheMaster', () => {
     const second = recordingTransport(() => {
       throw new Error('network call on a cached master');
     });
-    const manifest = await cacheMaster('82724289', {
+    const cached = await cacheMasterRecords('82724289', {
       creds,
       transport: second.transport,
       cacheRoot,
     });
     expect(second.calls).toHaveLength(0);
-    expect(manifest.sessions).toHaveLength(2);
-    // Re-extraction still ran from the cached zip.
-    expect(await readFile(path.join(cacheRoot, '82724289', 'r-v4-aaa', 'repeat0.json'), 'utf8')).toBe('a0');
+    expect(cached.manifest.sessions).toHaveLength(2);
+    // The records still come from the cached zip.
+    expect(await recordText(cached, 'r-v4-aaa', 'repeat0.json')).toBe('a0');
+  });
+
+  it('removes the extracted session dirs a pre-D5 cache left beside its zips', async () => {
+    const zipA = makeZip([{ name: `${S}-repeat0.json`, data: Buffer.from('a0') }]);
+    await cacheMaster('82724289', { creds, transport: recordingTransport(twoEngineHandler(zipA)).transport, cacheRoot });
+    const legacy = path.join(cacheRoot, '82724289', 'r-v4-aaa');
+    await mkdir(legacy);
+    await writeFile(path.join(legacy, `${S}-repeat0.json`), 'a0');
+
+    await cacheMaster('82724289', { creds, transport: offline().transport, cacheRoot });
+    expect(existsSync(legacy)).toBe(false);
   });
 });
 
@@ -143,7 +165,7 @@ function fakeBlazemeter(state: { masterStatus: string; sessions: FakeSession[] }
   };
 }
 
-const zipOf = (name: string, text: string) => makeZip([{ name, data: Buffer.from(text) }]);
+const zipOf = (name: string, text: string) => makeZip([{ name: `${S}-${name}`, data: Buffer.from(text) }]);
 const offline = () =>
   recordingTransport(() => {
     throw new Error('network call on a cached master');
@@ -160,6 +182,11 @@ describe('D1: the cache root', () => {
     for (const f of await readdir(path.join(here, '../src'))) {
       if (f.endsWith('.ts')) await copyFile(path.join(here, '../src', f), path.join(srcDir, f));
     }
+    // The copy's one package dependency, resolvable from beside it (cache.ts
+    // reads zips through local.ts, which imports the format package).
+    const modules = path.join(cacheRoot, 'with space', 'node_modules');
+    await mkdir(modules, { recursive: true });
+    await symlink(path.resolve(here, '../../format'), path.join(modules, 'bzm-vitals-format'), 'dir');
     const moduleUrl = pathToFileURL(path.join(srcDir, 'cache.ts')).href;
     expect(moduleUrl).toContain('with%20space');
     vi.stubEnv('BZM_VITALS_CACHE_DIR', '');
@@ -204,12 +231,13 @@ describe('D1: invalidation', () => {
     state.masterStatus = 'ENDED';
     state.sessions[1] = { id: 'r-v4-busy', status: 'ENDED', zip: zipOf('b.json', 'busy') };
     const second = recordingTransport(fakeBlazemeter(state));
-    const m2 = await cacheMaster('700', { creds, transport: second.transport, cacheRoot });
+    const c2 = await cacheMasterRecords('700', { creds, transport: second.transport, cacheRoot });
+    const m2 = c2.manifest;
 
     expect(second.calls.some((u) => STATUS_RE.test(u))).toBe(true);
     const busy = m2.sessions.find((s) => s.sessionId === 'r-v4-busy')!;
     expect(busy.artifact).toBe('present');
-    expect(await readFile(path.join(cacheRoot, '700', 'r-v4-busy', 'b.json'), 'utf8')).toBe('busy');
+    expect(await recordText(c2, 'r-v4-busy', 'b.json')).toBe('busy');
     // The unchanged, already-ENDED session is not fetched again.
     expect(second.calls.filter((u) => u.includes('r-v4-done'))).toEqual([]);
 
@@ -238,9 +266,9 @@ describe('D1: invalidation', () => {
     await cacheMaster('702', { creds, transport: recordingTransport(fakeBlazemeter(state)).transport, cacheRoot });
     state.sessions[0]!.zip = zipOf('a.json', 'v2');
     const again = recordingTransport(fakeBlazemeter(state));
-    await cacheMaster('702', { creds, transport: again.transport, cacheRoot, refresh: true });
+    const c = await cacheMasterRecords('702', { creds, transport: again.transport, cacheRoot, refresh: true });
     expect(again.calls.some((u) => u.startsWith('https://storage/r-v4-a'))).toBe(true);
-    expect(await readFile(path.join(cacheRoot, '702', 'r-v4-a', 'a.json'), 'utf8')).toBe('v2');
+    expect(await recordText(c, 'r-v4-a', 'a.json')).toBe('v2');
   });
 });
 
@@ -264,11 +292,11 @@ describe('D1: atomic writes', () => {
     };
     const warnings: string[] = [];
     const run = recordingTransport(fakeBlazemeter(state));
-    await cacheMaster('703', { creds, transport: run.transport, cacheRoot, log: (m: string) => warnings.push(m) });
+    const c = await cacheMasterRecords('703', { creds, transport: run.transport, cacheRoot, log: (m: string) => warnings.push(m) });
 
     expect(run.calls.some((u) => u.startsWith('https://storage/r-v4-a'))).toBe(true);
     expect(warnings.join('\n')).toMatch(/r-v4-a.*(truncated|corrupt)/);
-    expect(await readFile(path.join(masterDir, 'r-v4-a', 'a.json'), 'utf8')).toBe('whole');
+    expect(await recordText(c, 'r-v4-a', 'a.json')).toBe('whole');
     expect((await readdir(masterDir)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
   });
 
