@@ -143,8 +143,11 @@ already installed.
   records the page being left. It waits for the next paint first, so a click
   just before the navigation still counts for INP. The wait is usually a few
   milliseconds and is always bounded.
-- Re-running the dashboard for the same master is instant — artifacts are
-  cached locally in `.artifact-cache/` (also never committed).
+- Re-running the dashboard for a finished master is instant — artifacts are
+  cached in `./.artifact-cache/` under the directory you run it from (never
+  commit it). `--cache-dir <dir>` or `BZM_VITALS_CACHE_DIR` puts the cache
+  elsewhere, and `--refresh` fetches the master again. A master cached while
+  it was still running is re-checked on the next run.
 
 ## No npm access? Single-file builds
 
