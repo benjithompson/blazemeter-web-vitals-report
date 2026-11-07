@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SAMPLE_ATTACHMENT_PREFIX } from 'bzm-vitals-format';
-import { buildStandalone } from '../scripts/build-standalone';
+import { buildStandalone, bundle } from '../scripts/build-standalone';
 import { runCli } from '../src/cli.js';
 import { jsonResponse, bytesResponse, recordingTransport } from './helpers/transport.js';
 import { makeZip } from './helpers/zip.js';
@@ -139,17 +139,27 @@ afterAll(async () => {
 
 describe('the standalone file behaves as the package does', () => {
   it('resolves from node builtins alone — no npm-installable import survives', () => {
-    const importRe = /^import\s[^;]*?from\s+'([^']+)';/gm;
+    const importRe = /^import\s[^;]*?from\s+["']([^"']+)["'];/gm;
     const specifiers = [...source.matchAll(importRe)].map((m) => m[1]!);
     expect(specifiers.length).toBeGreaterThan(0);
     for (const spec of specifiers) expect(spec).toMatch(/^node:/);
     // No .js-extension self-imports, no top-level await, no surviving re-export.
-    expect(source).not.toMatch(/from\s+'\.[^']*'/);
+    expect(source).not.toMatch(/^(?:import|export)\s[^;]*?from\s+['"]\./m);
     expect(source).not.toMatch(/^await\s/m);
     expect(source).not.toMatch(/^export\s+(?:type\s+)?(?:\*|\{[\s\S]*?\})\s+from/m);
   });
 
+  it('the build FAILS when the bundle would import anything but node:* (esbuild metafile guard)', async () => {
+    const entry = path.join(workDir, 'guard-entry.ts');
+    // An unprefixed builtin stays external under platform 'node', so it reaches the guard.
+    await writeFile(entry, "import { readFileSync } from 'fs';\nexport const read = readFileSync;\n");
+    await expect(bundle(entry)).rejects.toThrow(/imports fs; only node:\* resolves/);
+    await writeFile(entry, "import { readFileSync } from 'node:fs';\nexport const read = readFileSync;\n");
+    await expect(bundle(entry)).resolves.toContain('node:fs');
+  });
+
   it('declares itself a generated artifact with usage in the header', () => {
+    expect(source.startsWith('// @ts-nocheck\n')).toBe(true);
     expect(source).toContain('DO NOT HAND-EDIT');
     expect(source).toContain('scripts/build-standalone.ts');
     expect(source).toContain('--master <masterId> --out report.html');
@@ -193,7 +203,7 @@ describe('the standalone file behaves as the package does', () => {
 // loader, or a flag, these runs would fail.
 describe('the plain-JavaScript .mjs runs on bare node', () => {
   it('resolves from node builtins alone and carries no TypeScript syntax', () => {
-    const importRe = /^import\s[^;]*?from\s+'([^']+)';/gm;
+    const importRe = /^import\s[^;]*?from\s+["']([^"']+)["'];/gm;
     const specifiers = [...mjsSource.matchAll(importRe)].map((m) => m[1]!);
     expect(specifiers.length).toBeGreaterThan(0);
     for (const spec of specifiers) expect(spec).toMatch(/^node:/);

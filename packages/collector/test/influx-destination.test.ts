@@ -9,6 +9,7 @@ import type { Sample } from 'bzm-vitals-format';
 import { InfluxDestination } from '../src/influx-destination';
 import type { InfluxFetchLike } from '../src/influx-writer';
 import { startInfluxServer, type InfluxServer } from './helpers/influx-server';
+import { ManualClock } from './helpers/manual-clock';
 
 const CONN = {
   BZM_INFLUX_URL: 'https://influx.example.com',
@@ -204,5 +205,135 @@ describe('same-millisecond Samples never overwrite each other (C5)', () => {
     const [p] = influx.points().filter((x) => x.tags.route === '/multi line');
     expect(p!.tags.title).toBe('line one  line two');
     expect(influx.bodies.at(-1)!.split('\n')).toHaveLength(1); // one Sample, one line
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C4 — retries with backoff (fake clock), and failure reasons that say why.
+// ---------------------------------------------------------------------------
+
+type Scripted = { status: number; retryAfter?: string; text?: string } | 'network-error' | 'hang';
+
+/** A fetch double that answers writes from a script, in order (the last entry repeats). */
+function scriptedFetch(script: Scripted[]): { fetch: InfluxFetchLike; posts: string[]; accepted: string[] } {
+  const posts: string[] = [];
+  const accepted: string[] = [];
+  const fetch: InfluxFetchLike = (url, init) => {
+    posts.push(init!.body!);
+    const step = script[Math.min(posts.length - 1, script.length - 1)]!;
+    if (step === 'network-error') return Promise.reject(new TypeError('fetch failed'));
+    if (step === 'hang') {
+      return new Promise((_, reject) => init!.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+    }
+    const ok = step.status >= 200 && step.status < 300;
+    if (ok) accepted.push(init!.body!);
+    const res = {
+      ok,
+      status: step.status,
+      text: async () => step.text ?? '',
+      headers: { get: (n: string) => (n.toLowerCase() === 'retry-after' ? step.retryAfter ?? null : null) },
+    };
+    return Promise.resolve(res);
+  };
+  return { fetch, posts, accepted };
+}
+
+async function retryingDestination(script: Scripted[]) {
+  const clock = new ManualClock();
+  const f = scriptedFetch(script);
+  const d = new InfluxDestination({ env: { ...CONN }, fetch: f.fetch, clock, random: () => 0 });
+  await d.init();
+  return { d, clock, ...f };
+}
+
+const OK = () => sample({ lcp: m(890, 'ok') });
+
+describe('send retries 429 / 5xx / network errors with backoff — never other 4xx (C4)', () => {
+  it('a 503 followed by a 204 delivers the batch exactly once', async () => {
+    const { d, clock, posts, accepted } = await retryingDestination([{ status: 503 }, { status: 204 }]);
+    const sending = d.send([OK()]);
+    await clock.runUntil(sending);
+    await expect(sending).resolves.toBeUndefined();
+    expect(posts).toHaveLength(2);
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]).toBe(posts[0]);
+  });
+
+  it('a 401 is never retried, and the reason leads with the status (body detail kept)', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 401, text: '{"code":"unauthorized"}' }]);
+    const sending = d.send([OK()]);
+    sending.catch(() => {});
+    await clock.runUntil(sending);
+    await expect(sending).rejects.toThrow(/^401 on POST \/api\/v2\/write.*unauthorized/);
+    expect(posts).toHaveLength(1);
+  });
+
+  it('a 400 (bad line protocol) is never retried', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 400 }]);
+    const sending = d.send([OK()]);
+    sending.catch(() => {});
+    await clock.runUntil(sending);
+    await expect(sending).rejects.toThrow(/^400 on POST/);
+    expect(posts).toHaveLength(1);
+  });
+
+  it('gives up after 3 retries (4 writes) on a persistent 500', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 500 }]);
+    const sending = d.send([OK()]);
+    sending.catch(() => {});
+    await clock.runUntil(sending);
+    await expect(sending).rejects.toThrow(/^500 on POST/);
+    expect(posts).toHaveLength(4);
+  });
+
+  it('a network error is retried', async () => {
+    const { d, clock, posts, accepted } = await retryingDestination(['network-error', { status: 204 }]);
+    const sending = d.send([OK()]);
+    await clock.runUntil(sending);
+    await sending;
+    expect(posts).toHaveLength(2);
+    expect(accepted).toHaveLength(1);
+  });
+
+  it('honours Retry-After on a 429', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 429, retryAfter: '2' }, { status: 204 }]);
+    const sending = d.send([OK()]);
+    await clock.advance(1_900);
+    expect(posts).toHaveLength(1);
+    await clock.advance(200);
+    await sending;
+    expect(posts).toHaveLength(2);
+  });
+
+  it('a write that never answers times out on the injected clock and is retried', async () => {
+    const { d, clock, posts, accepted } = await retryingDestination(['hang', { status: 204 }]);
+    const sending = d.send([OK()]);
+    await clock.advance(7_999);
+    expect(posts).toHaveLength(1);
+    await clock.runUntil(sending);
+    expect(posts).toHaveLength(2);
+    expect(accepted).toHaveLength(1);
+  });
+
+  it('the drain signal stops a retrying send promptly, with the real reason', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 503 }]);
+    const ctl = new AbortController();
+    const sending = d.send([OK()], ctl.signal);
+    sending.catch(() => {});
+    await clock.advance(100);
+    ctl.abort();
+    await expect(sending).rejects.toThrow(/^503 on POST/);
+    expect(posts).toHaveLength(1);
+  });
+
+  it('no failure reason carries the token', async () => {
+    for (const status of [401, 403, 500]) {
+      const { d, clock } = await retryingDestination([{ status }]);
+      const sending = d.send([OK()]);
+      sending.catch(() => {});
+      await clock.runUntil(sending);
+      const err = await sending.then(() => null, (e: Error) => e);
+      expect(err!.message).not.toContain(CONN.BZM_INFLUX_TOKEN);
+    }
   });
 });

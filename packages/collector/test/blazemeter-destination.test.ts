@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Sample } from 'bzm-vitals-format';
 import { BlazeMeterDestination, type FetchLike } from '../src/blazemeter-destination';
+import { ManualClock } from './helpers/manual-clock';
 
 const CREDS = { BLAZEMETER_API_KEY_ID: 'key-id-123', BLAZEMETER_API_KEY_SECRET: 'secret-abc' };
 const EXPECTED_AUTH = 'Basic ' + Buffer.from('key-id-123:secret-abc').toString('base64');
@@ -227,5 +228,160 @@ describe('send — the injection POST', () => {
     await d.send([sample({ ttfb: { value: 10, status: 'ok' } })]);
     const post = calls.find((c) => c.method === 'POST')!;
     expect((post.body as { intervals: Array<{ profileName: string }> }).intervals[0]!.profileName).toBe('FE Vitals');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C4 — retries with backoff (fake clock), and failure reasons that say why.
+// ---------------------------------------------------------------------------
+
+type Scripted = { status: number; retryAfter?: string } | 'network-error' | 'hang';
+
+/** A fetch double that answers POSTs from a script, in order (the last entry repeats). */
+function scriptedFetch(script: Scripted[]): { fetch: FetchLike; posts: unknown[]; accepted: unknown[] } {
+  const posts: unknown[] = [];
+  const accepted: unknown[] = [];
+  const fetch: FetchLike = (url, init) => {
+    if (init?.method !== 'POST') return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    const body = JSON.parse(init.body!);
+    posts.push(body);
+    const step = script[Math.min(posts.length - 1, script.length - 1)]!;
+    if (step === 'network-error') return Promise.reject(new TypeError('fetch failed'));
+    if (step === 'hang') {
+      return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+    }
+    const ok = step.status >= 200 && step.status < 300;
+    if (ok) accepted.push(body);
+    return Promise.resolve({
+      ok,
+      status: step.status,
+      json: async () => ({}),
+      headers: { get: (n: string) => (n.toLowerCase() === 'retry-after' ? step.retryAfter ?? null : null) },
+    });
+  };
+  return { fetch, posts, accepted };
+}
+
+const OK_SAMPLE = () => sample({ lcp: { value: 100, status: 'ok' } });
+
+async function retryingDestination(script: Scripted[]) {
+  const clock = new ManualClock();
+  const f = scriptedFetch(script);
+  const d = new BlazeMeterDestination({ env: { ...CREDS, BLAZEMETER_MASTER_ID: '1' }, fetch: f.fetch, clock, random: () => 0 });
+  await d.init();
+  return { d, clock, ...f };
+}
+
+describe('send retries 429 / 5xx / network errors with backoff — never other 4xx (C4)', () => {
+  it('a 503 followed by a 200 delivers the batch exactly once', async () => {
+    const { d, clock, posts, accepted } = await retryingDestination([{ status: 503 }, { status: 200 }]);
+    const sending = d.send([OK_SAMPLE()]);
+    await clock.runUntil(sending);
+    await expect(sending).resolves.toBeUndefined();
+    expect(posts).toHaveLength(2); // one retry…
+    expect(accepted).toHaveLength(1); // …and the batch landed exactly once
+    expect(accepted[0]).toEqual(posts[0]); // the same body, re-sent unchanged
+  });
+
+  it('a 401 is never retried, and the reason leads with the status', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 401 }]);
+    const sending = d.send([OK_SAMPLE()]);
+    sending.catch(() => {});
+    await clock.runUntil(sending);
+    await expect(sending).rejects.toThrow(/^401 on POST \/api\/v4\/data\/timeseries/);
+    expect(posts).toHaveLength(1);
+  });
+
+  it('gives up after 3 retries (4 POSTs) on a persistent 500', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 500 }]);
+    const sending = d.send([OK_SAMPLE()]);
+    sending.catch(() => {});
+    await clock.runUntil(sending);
+    await expect(sending).rejects.toThrow(/^500 on POST/);
+    expect(posts).toHaveLength(4);
+  });
+
+  it('a network error is retried', async () => {
+    const { d, clock, posts, accepted } = await retryingDestination(['network-error', { status: 200 }]);
+    const sending = d.send([OK_SAMPLE()]);
+    await clock.runUntil(sending);
+    await sending;
+    expect(posts).toHaveLength(2);
+    expect(accepted).toHaveLength(1);
+  });
+
+  it('honours Retry-After on a 429', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 429, retryAfter: '3' }, { status: 200 }]);
+    const sending = d.send([OK_SAMPLE()]);
+    await clock.advance(2_900);
+    expect(posts).toHaveLength(1);
+    await clock.advance(200);
+    await sending;
+    expect(posts).toHaveLength(2);
+  });
+
+  it('a request that never answers times out on the injected clock and is retried', async () => {
+    const { d, clock, posts, accepted } = await retryingDestination(['hang', { status: 200 }]);
+    const sending = d.send([OK_SAMPLE()]);
+    await clock.advance(7_999);
+    expect(posts).toHaveLength(1);
+    await clock.runUntil(sending);
+    expect(posts).toHaveLength(2);
+    expect(accepted).toHaveLength(1);
+  });
+
+  it('the drain signal stops a retrying send promptly, with the real reason', async () => {
+    const { d, clock, posts } = await retryingDestination([{ status: 503 }]);
+    const ctl = new AbortController();
+    const sending = d.send([OK_SAMPLE()], ctl.signal);
+    sending.catch(() => {});
+    await clock.advance(100);
+    ctl.abort();
+    await expect(sending).rejects.toThrow(/^503 on POST/);
+    expect(posts).toHaveLength(1);
+  });
+
+  it('no failure reason carries the credential', async () => {
+    for (const status of [401, 403, 500]) {
+      const { d, clock } = await retryingDestination([{ status }]);
+      const sending = d.send([OK_SAMPLE()]);
+      sending.catch(() => {});
+      await clock.runUntil(sending);
+      const err = await sending.then(() => null, (e: Error) => e);
+      expect(err!.message).not.toContain(CREDS.BLAZEMETER_API_KEY_ID);
+      expect(err!.message).not.toContain(CREDS.BLAZEMETER_API_KEY_SECRET);
+      expect(err!.message).not.toContain(EXPECTED_AUTH);
+    }
+  });
+});
+
+describe('a destination that comes up dead says why — initFailure (C4)', () => {
+  it('a 401 on the masterId resolution is reported with the status', async () => {
+    const { fetch } = fakeFetch(() => ({ ok: false, status: 401, json: {} }));
+    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-xyz' }, fetch });
+    expect(await d.init()).toBe(false);
+    expect(d.initFailure).toMatch(/^401 on GET \/api\/v4\/sessions\/r-v4-xyz/);
+  });
+
+  it('a transport failure on resolution is reported', async () => {
+    const fetch: FetchLike = async () => {
+      throw new Error('ECONNREFUSED');
+    };
+    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-xyz' }, fetch });
+    expect(await d.init()).toBe(false);
+    expect(d.initFailure).toContain('ECONNREFUSED');
+  });
+
+  it('a payload with no usable masterId is reported', async () => {
+    const { fetch } = fakeFetch(() => ({ json: { result: {} } }));
+    const d = new BlazeMeterDestination({ env: { ...CREDS, SESSION_ID: 'r-v4-xyz' }, fetch });
+    expect(await d.init()).toBe(false);
+    expect(d.initFailure).toContain('masterId');
+  });
+
+  it('is null when init succeeds', async () => {
+    const d = new BlazeMeterDestination({ env: { ...CREDS, BLAZEMETER_MASTER_ID: '1' } });
+    expect(await d.init()).toBe(true);
+    expect(d.initFailure).toBeNull();
   });
 });

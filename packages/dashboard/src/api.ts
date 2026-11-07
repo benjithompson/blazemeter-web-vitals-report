@@ -8,10 +8,34 @@
 // is pre-signed and expires in 20 minutes, so we re-list /reports/logs immediately
 // before each download, never persist a dataUrl, and retry a stale 403 by re-listing.
 // Credentials authenticate only the two listing calls; the dataUrl GET needs none.
+//
+// The API host is BLAZEMETER_API_BASE when set (the collector reads the same
+// variable), else https://a.blazemeter.com.
 
 import { basicAuthHeader, defaultTransport, type Credentials, type Transport } from './http.js';
 
-const BASE = 'https://a.blazemeter.com';
+export const DEFAULT_API_BASE = 'https://a.blazemeter.com';
+
+/**
+ * The API base URL: BLAZEMETER_API_BASE, trimmed and without trailing slashes
+ * (as the collector reads it), else the public default. A value that is not an
+ * http(s) URL fails loudly here rather than as a confusing fetch error later.
+ */
+export function resolveApiBase(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.BLAZEMETER_API_BASE?.trim();
+  if (!raw) return DEFAULT_API_BASE;
+  const base = raw.replace(/\/+$/, '');
+  let protocol: string;
+  try {
+    protocol = new URL(base).protocol;
+  } catch {
+    protocol = '';
+  }
+  if (protocol !== 'https:' && protocol !== 'http:') {
+    throw new Error(`BLAZEMETER_API_BASE must be an http(s) URL such as ${DEFAULT_API_BASE}`);
+  }
+  return base;
+}
 
 const ARTIFACTS_ZIP = 'artifacts.zip';
 
@@ -25,7 +49,11 @@ export interface SessionInfo {
 export interface ApiOptions {
   creds: Credentials;
   transport?: Transport;
+  /** Overrides BLAZEMETER_API_BASE; read from process.env when absent. */
+  apiBase?: string;
 }
+
+const baseOf = (opts: ApiOptions) => opts.apiBase ?? resolveApiBase();
 
 interface StatusEnvelope {
   result?: { sessions?: Array<Partial<SessionInfo>> };
@@ -50,7 +78,7 @@ export async function getMaster(
   opts: ApiOptions,
 ): Promise<{ name: string | null }> {
   const transport = opts.transport ?? defaultTransport;
-  const res = await transport(`${BASE}/api/v4/masters/${masterId}`, {
+  const res = await transport(`${baseOf(opts)}/api/v4/masters/${masterId}`, {
     headers: { Authorization: basicAuthHeader(opts.creds) },
   });
   if (!res.ok) {
@@ -67,7 +95,7 @@ export async function listSessions(
   opts: ApiOptions,
 ): Promise<SessionInfo[]> {
   const transport = opts.transport ?? defaultTransport;
-  const res = await transport(`${BASE}/api/v4/masters/${masterId}/status`, {
+  const res = await transport(`${baseOf(opts)}/api/v4/masters/${masterId}/status`, {
     headers: { Authorization: basicAuthHeader(opts.creds) },
   });
   if (!res.ok) {
@@ -93,7 +121,7 @@ export async function findArtifactUrl(
   opts: ApiOptions,
 ): Promise<string | null> {
   const transport = opts.transport ?? defaultTransport;
-  const res = await transport(`${BASE}/api/v4/sessions/${sessionId}/reports/logs`, {
+  const res = await transport(`${baseOf(opts)}/api/v4/sessions/${sessionId}/reports/logs`, {
     headers: { Authorization: basicAuthHeader(opts.creds) },
   });
   if (!res.ok) {
@@ -119,12 +147,12 @@ export async function fetchArtifactBytes(
   const url = await findArtifactUrl(sessionId, opts);
   if (url === null) return null;
 
-  let res = await transport(url); // pre-signed — no auth header
+  let res = await transport(url, { kind: 'download' }); // pre-signed — no auth header
   if (res.status === 403) {
     // dataUrl went stale between listing and download; re-list once and retry.
     const fresh = await findArtifactUrl(sessionId, opts);
     if (fresh === null) return null;
-    res = await transport(fresh);
+    res = await transport(fresh, { kind: 'download' });
   }
   if (!res.ok) {
     throw new Error(`download of ${sessionId} artifacts.zip failed: ${res.status}`);

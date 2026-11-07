@@ -8,6 +8,7 @@
 // Hard rules, asserted on the emitted bytes by the tests:
 //   - ZERO external requests: no <script src>, <link href>, <img src>, no
 //     remote fetch/XHR — the file renders offline, in six months, unchanged;
+//     the <head> CSP meta makes the browser enforce it (test/csp.test.ts);
 //   - NO credentials and NO pre-signed URLs, ever;
 //   - a Report with zero vitals says "no samples", never 0.
 //
@@ -652,7 +653,7 @@ function routeTableHtml(view: ReportView, idPrefix: string): string {
   return (
     `<div class="table-scroll"><table class="routes"><thead>${head}</thead>` +
     `<tbody>${body}</tbody></table></div>` +
-    `<p class="note">${escapeHtml(S.thresholdNote)} · ${escapeHtml(S.coverageNote)}</p>`
+    `<p class="note">${escapeHtml(S.thresholdNote)} · ${escapeHtml(S.coverageNote)} · ${escapeHtml(S.percentileNote)}</p>`
   );
 }
 
@@ -752,6 +753,15 @@ function enginesHtml(view: ReportView): string {
 }
 
 // ------------------------------------------------------------ page chrome
+
+// The page's own guard for "zero external requests": everything is inline
+// (the <style>, the one <script>, inline SVG), so the browser may fetch
+// nothing. The application/json data blob is never executed, so script-src
+// does not apply to it; `img-src data:` is the only allowance, for future
+// inline images. Declared first in <head>, before the <style> and <script>
+// it governs.
+const CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:";
 
 // The one inline script: it toggles precomputed drill-down rows, and swaps
 // which fully server-rendered variant (include/exclude failed Executions) is
@@ -1042,6 +1052,8 @@ export function renderHtml(data: ReportData): string {
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${CSP}">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(heading)}</title>
 <style>${STYLE}</style>

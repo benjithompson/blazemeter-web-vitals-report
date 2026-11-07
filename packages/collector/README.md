@@ -60,7 +60,7 @@ the number, so an unmeasurable metric can never masquerade as `0`.
 |---|---|
 | `ok` | measured |
 | `unsupported` | the browser lacks the API (e.g. CLS on Firefox/WebKit) |
-| `no-interaction` | INP: the journey performed no qualifying interaction |
+| `no-interaction` | INP: the journey performed no interaction on this document (a click, tap or key press — however fast — counts as one and reports `ok`) |
 | `not-finalized` | LCP: the page closed before the browser finalized the value |
 | `error` | collection threw; the failure is recorded, not hidden |
 | `unknown` | written only by the dashboard's legacy adapter, never by this collector |
@@ -77,6 +77,14 @@ Likewise, non-Chromium projects still emit Samples: CLS arrives as
 - **One Sample per Navigation** (~450 bytes): the five vitals with statuses,
   `domContentLoaded`/`load` timings, the URL as navigated, your declared
   Route if any, and test identity (file, title, project, repeat, worker).
+  Each Sample also carries a `context` block:
+
+  | field | what it counts |
+  |---|---|
+  | `workers` | the Playwright worker count of the run |
+  | `resourceCount` | the document's own resource-timing entries (what the page fetched, as the browser's Resource Timing API reports it) |
+  | `requestCount` | requests made during **this Navigation's document only**: its own document request (and redirects), plus every request the page made while it was current, subframes included. It starts again at the next document. |
+  | `failedRequests` | requests on the page that failed (network error, abort) |
 - **One Outcome per test execution**: `passed | failed | timedOut | skipped`
   plus retry. A *missing* Outcome means the execution crashed before
   finishing — the dashboard reads that absence as a signal.
@@ -103,6 +111,25 @@ master are both present, and does nothing otherwise (so a local
 The push is strictly best-effort: it is never awaited by your test, and a slow
 or failed push never slows, perturbs, or fails the run. A metric that could not
 be measured is simply **absent** from the Timeline — never sent as a fake `0`.
+
+Best-effort is not silent:
+
+- **Retries.** A send that gets `429`, a `5xx`, a timeout or a network error is
+  retried up to 3 times with exponential backoff plus jitter (about 0.5 s, 1 s,
+  2 s), honouring `Retry-After`. Any other `4xx` (a bad key, a bad payload) is
+  never retried. Retries fit inside the 15 s teardown drain, so they never
+  lengthen worker teardown beyond it.
+- **Warnings.** A failure prints one line to stderr per destination per distinct
+  reason, e.g. `[bzm-vitals] blazemeter: 401 on POST /api/v4/data/timeseries
+  (check the BlazeMeter api-key id/secret)`. A dead endpoint never floods the log.
+- **Push status.** At worker teardown each worker writes a
+  `bzm-vitals-push-status-<worker>.json` file next to its Samples. It records,
+  for each destination, how many Samples were `sent`, `failed` (rejected, or the
+  destination never came up) and `dropped` (buffer overflow, or still pending
+  when the drain budget ran out), plus `lastError`. It never contains a
+  credential. It is attached to the worker's last test after that test has been
+  reported, so the file is on disk (and in the Engine's `artifacts.zip`) but
+  reporters do not list it. The dashboard ignores it for now.
 
 Enable it by setting the same discrete API-key vars the dashboard uses on the
 test (`BLAZEMETER_API_KEY_ID` / `BLAZEMETER_API_KEY_SECRET`). No `config.yml`
