@@ -24,6 +24,11 @@ This regenerates `packages/collector/dist-standalone/bzm-playwright-vitals.ts` f
 collector + format sources and copies it into this directory. `bzm-playwright-vitals.ts` is
 gitignored here — if it's missing, you haven't built it.
 
+The file is an esbuild bundle: plain JavaScript inside a `.ts` file marked `// @ts-nocheck`,
+which Playwright's TS loader accepts on the Engine like any relative TS import. It carries no
+type annotations, so a local editor does not know the collector's `vitals` fixture and
+underlines it; the run itself is unaffected.
+
 ## 2. Upload — five files, together
 
 Create (or edit) a BlazeMeter **Performance** test (Taurus, `executor: playwright` —

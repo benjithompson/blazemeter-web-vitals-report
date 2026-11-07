@@ -152,7 +152,8 @@ and for machines where `npm install` isn't an option:
   (offline) or `node bzm-vitals-dashboard.mjs --master <masterId> --out report.html`
   (API). It runs on Node 20 or later with no flags, no `npm install` and no
   `tsx`, and it imports Node built-in modules only.
-- **`bzm-vitals-dashboard.ts`** (dashboard): the same code as TypeScript, for
+- **`bzm-vitals-dashboard.ts`** (dashboard): the same bundled JavaScript in a
+  `.ts` file (marked `// @ts-nocheck`), for
   `npx tsx bzm-vitals-dashboard.ts …` or, on Node ≥ 23.6,
   `node bzm-vitals-dashboard.ts …`.
 
