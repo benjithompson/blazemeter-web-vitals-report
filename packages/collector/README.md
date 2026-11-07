@@ -267,9 +267,14 @@ BLAZEMETER_API_KEY_SECRET=...
 
 ## Known limitations
 
-- **Keep each journey on one site.** Cross-site navigation (yoursite.com →
-  othersite.com) swaps the browser process and loses the Sample for the page
-  being left — a platform behavior, not a knob.
+- **A Sample is flushed before the document is left, not at `pagehide`.** A
+  cross-site navigation (yoursite.com → othersite.com) swaps the browser
+  process, and from Playwright 1.63 Chromium swaps the frame on every
+  navigation; a call from `pagehide` never arrives. So the collector flushes
+  before `goto()` / `reload()` / `goBack()` / `goForward()` / `page.close()`,
+  and at `beforeunload` for link clicks, form submits and script navigations:
+  cross-site journeys keep every Sample. A Navigation left before it painted
+  says so honestly (`fcp: not-finalized`); it is not dropped.
 - **SPA link clicks are not Navigations.** Client-side routing creates no new
   document, so the whole journey lands in one Sample flushed at teardown.
 - INP reflects only the interactions your test performs — it's a regression

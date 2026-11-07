@@ -7,10 +7,9 @@
 // import to './bzm-playwright-vitals' — nothing else changes.)
 //
 // WHY THIS JOURNEY IS SHAPED THE WAY IT IS (measured, not guessed — see README):
-//   * Both Navigations stay on ONE site. A cross-SITE navigation (e.g.
-//     example.com -> iana.org) swaps the Chromium renderer process and the
-//     departing document's Sample is lost — a platform behavior, not a
-//     collector bug. Same-site document navigations flush reliably.
+//   * Both Navigations stay on ONE site — simply a small, stable journey.
+//     (Cross-site navigations are recorded too: the collector flushes the
+//     departing document before goto() and at beforeunload, not at pagehide.)
 //   * The site is server-rendered (real document Navigations). An SPA like
 //     playwright.dev intercepts link clicks client-side — no document
 //     Navigation, so by design no second Sample.
