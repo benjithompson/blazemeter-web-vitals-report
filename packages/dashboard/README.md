@@ -66,6 +66,21 @@ writes nothing to `.artifact-cache/` and needs no credentials. Without
 `--master`, the report has no BlazeMeter link and says `imported from <name>`.
 A path with no records and no `bzt.log` fails loudly.
 
+## Malformed records are reported, not aggregated
+
+Every Sample and Outcome is checked field by field against format v1
+(`validateSample` / `validateOutcome` in `bzm-vitals-format`, also published as
+JSON Schemas in its `schema/` folder). Some examples of what fails the check: a
+metric value that is not a number, a status outside the closed vocabulary, a
+value on a metric whose status is not `ok`, and a test identity missing
+`project`. A record that fails is left out of every number in the report. The
+Engine's line then says `(N unreadable)`, and the CLI's summary line counts
+it. The report's embedded data keeps each file's name and the reason, which
+names the field.
+Records from collector 0.2.x stay valid. So do unknown metric names and the
+optional fields added later (`test.id`, `titlePath`, `path`, `pageIndex`,
+`lostNavigations`).
+
 ## Credentials — BlazeMeter's own convention
 
 ```bash

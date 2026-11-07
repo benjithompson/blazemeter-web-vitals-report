@@ -5,20 +5,26 @@
 // to {name}-{sha1(path)}{ext}, so the collector's files arrive as
 // {SAMPLE_ATTACHMENT_PREFIX}-{n}-{sha1}.json — a prefix match is sufficient.
 //
-// Rules (SPEC.md → "The record format"):
+// Rules (SPEC.md → "The record format"): validity is bzm-vitals-format's
+// validateSample / validateOutcome — the ONE definition, shared with the published
+// JSON Schemas. This file adds only the JSON decoding around it.
 //   - schemaVersion !== 1 is REJECTED LOUDLY — recorded per-file with a reason,
 //     never silently misread.
-//   - Metric NAMES are open: unknown names pass through untouched.
-//   - Metric STATUS is closed: the parser preserves whatever it finds verbatim;
-//     aggregation treats anything that is not exactly "ok" as not-ok.
+//   - Every field is type-checked: a malformed record (a string metric value, a
+//     test identity missing project, a status outside the closed vocabulary, …)
+//     is rejected with a reason naming the field, and lands in the session's
+//     `unreadable` list instead of reaching aggregation.
+//   - Metric NAMES are open: unknown names pass through untouched, as do unknown
+//     fields — the additive ones (test.id, titlePath, path, pageIndex,
+//     lostNavigations) and any this version has never heard of.
 //   - Every field is preserved — issue #10 asserts a full round-trip of the
 //     collector's real output through this parser.
 
 import {
   OUTCOME_ATTACHMENT_PREFIX,
   SAMPLE_ATTACHMENT_PREFIX,
-  SCHEMA_VERSION,
-  isExecutionStatus,
+  validateOutcome,
+  validateSample,
   type ExecutionOutcome,
   type Sample,
   type TestIdentity,
@@ -52,35 +58,24 @@ export type ParseResult =
  * fields and unknown metric names ride along), or a loud rejection reason.
  */
 export function parseSampleJson(raw: string): ParseResult {
-  let parsed: unknown;
+  const decoded = decodeJson(raw);
+  if (!decoded.ok) return decoded;
+  // validateSample hands back the SAME object — nothing is rebuilt, so unknown fields
+  // and unknown metric names ride along. Issue #10 asserts the round-trip.
+  const valid = validateSample(decoded.value);
+  if (!valid.ok) return valid;
+  // A valid on-disk Sample is a DashboardSample (whose test/navigationIndex are only
+  // widened to nullable for the legacy adapter).
+  return { ok: true, sample: valid.value };
+}
+
+/** JSON.parse with the failure turned into a reason. */
+function decodeJson(raw: string): { ok: true; value: unknown } | { ok: false; reason: string } {
   try {
-    parsed = JSON.parse(raw);
+    return { ok: true, value: JSON.parse(raw) };
   } catch (err) {
     return { ok: false, reason: `not valid JSON: ${(err as Error).message}` };
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { ok: false, reason: 'not a JSON object' };
-  }
-  const record = parsed as Record<string, unknown>;
-
-  if (record.schemaVersion !== SCHEMA_VERSION) {
-    return {
-      ok: false,
-      reason: `schemaVersion ${JSON.stringify(record.schemaVersion)} is not the supported version ${SCHEMA_VERSION} — rejected, not misread`,
-    };
-  }
-  if (typeof record.url !== 'string') {
-    return { ok: false, reason: 'missing url' };
-  }
-  if (typeof record.ts !== 'number') {
-    return { ok: false, reason: 'missing ts (epoch ms)' };
-  }
-  if (typeof record.vitals !== 'object' || record.vitals === null) {
-    return { ok: false, reason: 'missing vitals map' };
-  }
-  // Everything else — including fields this version has never heard of — is
-  // preserved verbatim. Do not rebuild the object; issue #10 asserts round-trip.
-  return { ok: true, sample: record as unknown as DashboardSample };
 }
 
 /** Is this flat-zip basename a collector-emitted Execution Outcome attachment? */
@@ -93,51 +88,15 @@ export type OutcomeParseResult =
   | { ok: false; reason: string };
 
 /**
- * Parse one Execution Outcome file's bytes. Same schemaVersion discipline as
- * Samples; additionally the test identity (the join key) and the closed status
- * vocabulary are validated — a missing Outcome means "crashed", so a misread
- * one must never slip through as anything.
+ * Parse one Execution Outcome file's bytes, through the format's validateOutcome:
+ * the same schemaVersion discipline as Samples, plus the full test identity (the
+ * join key) and the closed status vocabulary — a missing Outcome means "crashed",
+ * so a misread one must never slip through as anything.
  */
 export function parseOutcomeJson(raw: string): OutcomeParseResult {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return { ok: false, reason: `not valid JSON: ${(err as Error).message}` };
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { ok: false, reason: 'not a JSON object' };
-  }
-  const record = parsed as Record<string, unknown>;
-
-  if (record.schemaVersion !== SCHEMA_VERSION) {
-    return {
-      ok: false,
-      reason: `schemaVersion ${JSON.stringify(record.schemaVersion)} is not the supported version ${SCHEMA_VERSION} — rejected, not misread`,
-    };
-  }
-  const test = record.test as Record<string, unknown> | undefined;
-  if (
-    typeof test !== 'object' ||
-    test === null ||
-    typeof test.file !== 'string' ||
-    typeof test.title !== 'string' ||
-    typeof test.project !== 'string' ||
-    typeof test.repeat !== 'number' ||
-    typeof test.worker !== 'number'
-  ) {
-    return { ok: false, reason: 'missing or incomplete test identity — the Outcome cannot join without it' };
-  }
-  // The format's closed EXECUTION_STATUSES vocabulary. Anything else is rejected
-  // loudly — misreading a status would corrupt the crashed-detection signal.
-  if (!isExecutionStatus(record.status)) {
-    return {
-      ok: false,
-      reason: `status ${JSON.stringify(record.status)} is not in the closed ExecutionStatus vocabulary — rejected, not misread`,
-    };
-  }
-  if (typeof record.retry !== 'number') {
-    return { ok: false, reason: 'missing retry' };
-  }
-  return { ok: true, outcome: record as unknown as ExecutionOutcome };
+  const decoded = decodeJson(raw);
+  if (!decoded.ok) return decoded;
+  const valid = validateOutcome(decoded.value);
+  if (!valid.ok) return valid;
+  return { ok: true, outcome: valid.value };
 }

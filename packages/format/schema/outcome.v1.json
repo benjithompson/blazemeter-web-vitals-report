@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/benjithompson/blazemeter-web-vitals-report/blob/main/packages/format/schema/outcome.v1.json",
+  "title": "bzm-vitals-format Execution Outcome (format v1)",
+  "description": "One Outcome per finished Execution. Mirrors validateOutcome in bzm-vitals-format, and is tested to agree with it. Unknown fields are allowed everywhere; the status vocabulary is closed.",
+  "type": "object",
+  "required": ["schemaVersion", "test", "status", "retry"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "test": { "$ref": "#/$defs/testIdentity" },
+    "status": { "enum": ["passed", "failed", "timedOut", "skipped"] },
+    "retry": { "$ref": "#/$defs/count" },
+    "lostNavigations": {
+      "$ref": "#/$defs/count",
+      "description": "Optional (additive). Main-frame Navigations seen to commit with no Sample written."
+    }
+  },
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "testIdentity": {
+      "type": "object",
+      "required": ["file", "title", "project", "repeat", "worker"],
+      "properties": {
+        "file": { "type": "string" },
+        "title": { "type": "string" },
+        "project": { "type": "string" },
+        "repeat": { "$ref": "#/$defs/count" },
+        "worker": { "$ref": "#/$defs/count" },
+        "id": { "type": "string", "description": "Optional (additive). Playwright's testInfo.testId." },
+        "titlePath": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional (additive). testInfo.titlePath without the file element."
+        },
+        "path": { "type": "string", "description": "Optional (additive). Spec path relative to testDir, POSIX separators." }
+      }
+    }
+  }
+}

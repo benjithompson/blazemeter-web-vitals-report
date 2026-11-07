@@ -260,6 +260,31 @@ describe('local import — loud failures', () => {
     await expect(runLocal(zip)).rejects.toThrow(/cannot read .*artifacts\.zip: not a zip/);
   });
 
+  it('a malformed Sample (string lcp value, or test without project) lands in unreadable with a reason — never in aggregation (B2)', async () => {
+    const zip = path.join(workDir, 'artifacts.zip');
+    const { project: _, ...noProject } = { file: 'shop.spec.ts', title: 'checkout', project: 'chromium', repeat: 0, worker: 0 };
+    await writeFile(
+      zip,
+      makeZip([
+        { name: S1, data: sample(1000) },
+        { name: S2, data: sample(2000, { vitals: { lcp: { value: '12', status: 'ok' } } }) },
+        { name: `${SAMPLE_ATTACHMENT_PREFIX}-3-cccccccccccccccccccccccccccccccccccccccc.json`, data: sample(3000, { test: noProject }) },
+      ]),
+    );
+
+    const { data } = await runLocal(zip);
+
+    expect(lcps(data)).toEqual([1000]);
+    const session = data.sessions[0]!;
+    expect(session.sampleCount).toBe(1);
+    expect(session.unreadable.map((u) => u.file).sort()).toEqual(
+      [S2, `${SAMPLE_ATTACHMENT_PREFIX}-3-cccccccccccccccccccccccccccccccccccccccc.json`].sort(),
+    );
+    const reasonFor = (prefix: string) => session.unreadable.find((u) => u.file.startsWith(prefix))!.reason;
+    expect(reasonFor(`${SAMPLE_ATTACHMENT_PREFIX}-2`)).toMatch(/vitals\.lcp\.value/);
+    expect(reasonFor(`${SAMPLE_ATTACHMENT_PREFIX}-3`)).toMatch(/test\.project/);
+  });
+
   it('lists a Taurus Engine that carried no records — "no samples", not an error', async () => {
     // The collector import was forgotten: the Engine ran, recorded nothing.
     const zip = path.join(workDir, 'artifacts.zip');

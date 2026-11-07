@@ -15,15 +15,21 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./schema/sample.v1.json": "./schema/sample.v1.json",
+    "./schema/outcome.v1.json": "./schema/outcome.v1.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "schema"
   ],
   "scripts": {
     "build": "tsc --build",
     "typecheck": "tsc --build",
     "test": "tsc --build && tsc -p test && vitest run",
     "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0"
   }
 }
