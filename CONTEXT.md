@@ -27,6 +27,8 @@ Engines are **ephemeral** — a given Engine exists only within one Report, and 
 ### Test
 What a tester wrote: the triple **`file` + `title` + `project`**. The unit of authorship.
 
+The triple can collide: the same title in two `describe` blocks, or the same spec basename in two folders. A record that carries **`test.id`** (Playwright's id for the Test) names the Test by that instead; `titlePath` and `path` are its readable form. Older records without `test.id` fall back to the triple.
+
 *Not* "test case", "scenario" (Taurus uses "scenario" for its own thing), or "spec".
 
 ### Execution

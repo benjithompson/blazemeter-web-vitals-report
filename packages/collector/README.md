@@ -76,7 +76,22 @@ Likewise, non-Chromium projects still emit Samples: CLS arrives as
 
 - **One Sample per Navigation** (~450 bytes): the five vitals with statuses,
   `domContentLoaded`/`load` timings, the URL as navigated, your declared
-  Route if any, and test identity (file, title, project, repeat, worker).
+  Route if any, and a `test` identity block (the same block is on the
+  Outcome):
+
+  | field | what it is |
+  |---|---|
+  | `file` | the spec file's basename, e.g. `checkout.spec.ts` |
+  | `title` | the test's own title, without its `describe` chain |
+  | `project` | the Playwright project name |
+  | `repeat` | the `--repeat-each` index |
+  | `worker` | the Playwright worker index |
+  | `id` | Playwright's `testId`: unique per test and project, and stable across runs and Engines. Use it to tell apart two tests that share `file` + `title` + `project` |
+  | `titlePath` | the `describe` chain plus the title, e.g. `["Checkout", "pays"]` (Playwright's `titlePath` without its leading file element) |
+  | `path` | the spec's path relative to the project's `testDir`, with `/` separators on every OS, e.g. `checkout/pay.spec.ts` |
+
+  `file`, `title` and `project` are written exactly as 0.2.x wrote them;
+  records from 0.2.x lack `id`, `titlePath` and `path`.
   Each Sample also carries a `context` block:
 
   | field | what it counts |

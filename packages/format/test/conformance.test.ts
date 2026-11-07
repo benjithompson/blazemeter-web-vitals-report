@@ -85,6 +85,19 @@ async function fixtureJsonFiles(): Promise<string[]> {
 const FIXTURES = await fixtureJsonFiles();
 const isSampleFile = (f: string) => basename(f).includes('bzm-vitals-sample');
 const isOutcomeFile = (f: string) => basename(f).includes('bzm-vitals-outcome');
+/** Records C1 (#40) and later wrote: they carry test.id, titlePath and path. */
+const isPostC1 = (f: string) => /[\\/]collector-0\.3\.x[\\/]/.test(f);
+
+/** The identity fields every record must or must not carry, by which collector wrote it. */
+function expectIdentityFields(test: Json, f: string) {
+  if (isPostC1(f)) {
+    expect(typeof test.id, f).toBe('string');
+    expect(Array.isArray(test.titlePath), f).toBe(true);
+    expect(typeof test.path, f).toBe('string');
+  } else {
+    expect('id' in test, f).toBe(false); // genuinely pre-C1 bytes
+  }
+}
 
 describe('every fixture in packages/*/test/fixtures', () => {
   it('finds the 0.2.x record fixtures at all — an empty glob must not pass vacuously', () => {
@@ -92,18 +105,23 @@ describe('every fixture in packages/*/test/fixtures', () => {
     expect(FIXTURES.filter(isOutcomeFile).length).toBeGreaterThanOrEqual(10);
   });
 
-  it('every Sample fixture (0.2.x, no test.id) is valid to the validator AND the JSON Schema', async () => {
+  it('finds the post-C1 record fixtures (collector-0.3.x, with test.id) too', () => {
+    expect(FIXTURES.filter((f) => isPostC1(f) && isSampleFile(f)).length).toBeGreaterThanOrEqual(5);
+    expect(FIXTURES.filter((f) => isPostC1(f) && isOutcomeFile(f)).length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('every Sample fixture (0.2.x without test.id, 0.3.x with it) is valid to the validator AND the JSON Schema', async () => {
     for (const f of FIXTURES.filter(isSampleFile)) {
       const record = (await readJson(f)) as { test: Json };
-      expect('id' in record.test, f).toBe(false); // genuinely pre-C1 bytes
+      expectIdentityFields(record.test, f);
       expectAgree('sample', record, true, relative(PACKAGES_DIR, f));
     }
   });
 
-  it('every Outcome fixture (0.2.x, no test.id) is valid to the validator AND the JSON Schema', async () => {
+  it('every Outcome fixture (0.2.x without test.id, 0.3.x with it) is valid to the validator AND the JSON Schema', async () => {
     for (const f of FIXTURES.filter(isOutcomeFile)) {
       const record = (await readJson(f)) as { test: Json };
-      expect('id' in record.test, f).toBe(false);
+      expectIdentityFields(record.test, f);
       expectAgree('outcome', record, true, relative(PACKAGES_DIR, f));
     }
   });
