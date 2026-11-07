@@ -109,12 +109,20 @@ describe('the collector agrees with web-vitals on the same documents', () => {
     }
   });
 
-  // Expected to fail until C2 (fast clicks reported as interactions) lands: the collector
-  // records a fast click as 'no-interaction', while web-vitals' first-input observer
-  // sees it. Flip to `it` when C2 merges.
-  it.fails(`INP for a fast click is within ${MS_TOLERANCE} ms`, () => {
+  // Until C2 (fast clicks reported as interactions) lands, whether the collector sees a
+  // fast click depends on the machine: a click under the 16 ms event-timing threshold
+  // reads 'no-interaction' (the C2 bug), a slower one (e.g. a loaded CI runner) is
+  // measured. So this accepts the two outcomes the pre-C2 collector can produce: the
+  // known gap, or a value that matches web-vitals. When C2 merges, tighten it to require
+  // 'ok' for every fast click (C2's PR does this).
+  it(`INP for a fast click is within ${MS_TOLERANCE} ms, or the known pre-C2 no-interaction gap`, () => {
     for (const [s, o] of pairs(FAST_CLICKS)) {
       expect(o.inp, 'web-vitals saw the click').not.toBeNull();
+      const m: Metric | undefined = s.sample.vitals['inp'];
+      if (m?.status === 'no-interaction') {
+        expect(m.value, s.path).toBeNull();
+        continue;
+      }
       expect(Math.abs(ok(s, 'inp') - o.inp!), s.sample.url).toBeLessThanOrEqual(MS_TOLERANCE);
     }
   });
