@@ -19,8 +19,12 @@
 //     to-outputPath()-then-attach({ path }) two-step is the ONLY transport that survives.
 //   * Injection is passive addInitScript; the trap pushes to Node via exposeBinding on
 //     flush. Never page.on('load') -> evaluate(), which perturbs the metric measured.
-//   * page.close() flushes nothing, so the fixture flushes in teardown BEFORE the page
-//     closes — via a synthetic event the hand-rolled listener still receives.
+//   * page.close() flushes nothing, so the fixture flushes in teardown BEFORE the context
+//     closes, and a test's own page.close() flushes first — via a synthetic event the
+//     hand-rolled listener still receives.
+//   * Instrumentation is per CONTEXT (C6, #42): every page the test opens in the
+//     fixture-provided context is measured — the `page` fixture, popups and
+//     context.newPage() alike — and each Sample says which page by its pageIndex.
 //   * A binding call from a document's pagehide never reaches Node once its frame is
 //     swapped — cross-site always, and on every navigation from Playwright 1.63
 //     (Chromium RenderDocument). So test-driven navigations flush BEFORE they navigate,
@@ -29,7 +33,7 @@
 //     here ever serializes process.env or any subset of it.
 
 import { test as base, expect } from '@playwright/test';
-import type { Page, TestInfo } from '@playwright/test';
+import type { BrowserContext, Page, Request, TestInfo } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { basename, relative, sep } from 'node:path';
 import {
@@ -88,10 +92,43 @@ interface RawReading {
   resourceCount: number | null;
 }
 
-/** Per-page collection state. One page drives one Execution's Navigations in order. */
+/**
+ * Per-Execution collection state: one test, one fixture-provided context, and every page
+ * opened in it. navigationIndex and the pending route are per Execution; request counts
+ * are per page (see PageState).
+ */
 interface CollectorState {
-  /** navigationIndex is 1-based and increments per Navigation within an Execution. */
+  /**
+   * navigationIndex is 1-based and increments per Navigation within an Execution — across
+   * ALL its pages, so it stays unique per Execution (and so does the Sample's file name).
+   * It is claimed when a document first reports, so within one page it follows ts order;
+   * across pages it follows the order Navigations began to leave. ts is the time order.
+   */
   nextNavigationIndex: number;
+  /** pageIndex is 0-based: the context's first page is 0, then one per page, in open order. */
+  nextPageIndex: number;
+  /** Every measured page, in open order (a Map keeps insertion order). */
+  pages: Map<Page, PageState>;
+  /** Registers a page with the collector (idempotent). Set once the context is attached. */
+  trackPage: ((page: Page) => PageState) | null;
+  /** In-flight writes; teardown awaits these so no Sample is lost to a race. */
+  pending: Promise<void>[];
+  /**
+   * The route declared via vitals.route(), waiting for its Sample. Consumed
+   * synchronously with the navigationIndex claim (see the binding), so it lands on the
+   * Navigation that reports next — with one page, the one the page was on when route()
+   * was called. It is per Execution, not per page: with several pages open, whichever
+   * page's document reports first takes it.
+   */
+  pendingRoute: string | null;
+  /** Documents whose Sample is claimed but not yet written — teardown writes them. */
+  openDocs: Map<string, OpenDoc>;
+}
+
+/** Per-page state: the requests of the page's CURRENT document. */
+interface PageState {
+  /** Which page of the Execution's context this is — the Sample's pageIndex. */
+  pageIndex: number;
   /**
    * Requests the CURRENT document has made: its own document request, then everything it
    * fetched (subframes included). Reset when the next document commits — see
@@ -105,16 +142,6 @@ interface CollectorState {
    */
   incomingDocumentRequests: number;
   failedRequests: number;
-  /** In-flight writes; teardown awaits these so no Sample is lost to a race. */
-  pending: Promise<void>[];
-  /**
-   * The route declared via vitals.route(), waiting for its Sample. Consumed
-   * synchronously with the navigationIndex claim (see the binding), so it always lands
-   * on the Navigation the page was on when route() was called.
-   */
-  pendingRoute: string | null;
-  /** Documents whose Sample is claimed but not yet written — teardown writes them. */
-  openDocs: Map<string, OpenDoc>;
 }
 
 /**
@@ -124,6 +151,7 @@ interface CollectorState {
  */
 interface OpenDoc {
   navigationIndex: number;
+  pageIndex: number;
   route: string | null;
   requestCount: number;
   failedRequests: number;
@@ -377,6 +405,9 @@ function trapSource(reportBinding: string, flushHook: string): string {
     // window FCP (and the LCP candidate that rides the same paint) would race to null.
     // Bounded: FCP may legitimately never come, so we report regardless after 1500ms.
     function flushWithGrace() {
+      // A fresh page's (or popup's) initial about:blank is no Navigation and reports
+      // nothing, so there is no paint to wait for before it is left.
+      if (location.href === 'about:blank') return Promise.resolve();
       return new Promise(function (resolve) {
         function proceed() {
           afterNextPaint(function () {
@@ -469,22 +500,23 @@ function testIdentity(testInfo: TestInfo): TestIdentity {
 }
 
 /**
- * Wire the collector onto a page: expose the Node binding, inject the trap, and count
- * requests. Order matters — the binding and init script must exist before the page
- * navigates, so the trap the first document runs can call back.
+ * Wire the collector onto the test's context: expose the Node binding and inject the trap
+ * for every page in it, and track each page as it opens (request counts, flush patching).
+ * Order matters — the binding and init script must exist before any page navigates, so
+ * the trap the first document runs can call back. Returns the page registrar.
  */
 async function attachCollector(
-  page: Page,
+  context: BrowserContext,
   testInfo: TestInfo,
   state: CollectorState,
   pusher: Pusher,
-): Promise<void> {
+): Promise<(page: Page) => PageState> {
   const identity = testIdentity(testInfo);
   // The DERIVED per-Engine worker count (Taurus's --workers), never a declared concurrency.
   const workers = testInfo.config.workers ?? null;
 
   async function writeSample(doc: OpenDoc): Promise<void> {
-    const { reading, navigationIndex, route } = doc;
+    const { reading, navigationIndex, pageIndex, route } = doc;
     const sample: Sample = {
       schemaVersion: SCHEMA_VERSION,
       ts: Math.round(reading.timeOrigin), // epoch ms at Navigation start — exactly one timestamp
@@ -495,6 +527,7 @@ async function attachCollector(
       ...(route !== null ? { route } : {}),
       test: identity,
       navigationIndex,
+      pageIndex,
       vitals: {
         ttfb: metric(reading.ttfb),
         fcp: metric(reading.fcp),
@@ -531,7 +564,34 @@ async function attachCollector(
     });
   }
 
-  await page.exposeBinding(REPORT_BINDING, async (_source, reading: RawReading) => {
+  /** Orphan document requests of pages not yet reported, by URL (see noteEarlyDocumentRequest). */
+  const earlyDocumentRequests = new Map<string, number>();
+
+  /**
+   * Register a page: its pageIndex is claimed here, in the order pages open (the context's
+   * 'page' event fires before newPage() resolves and before the opener's 'popup'), and its
+   * navigation methods are patched on THIS instance before the test can call them.
+   * Idempotent.
+   */
+  function trackPage(page: Page): PageState {
+    const known = state.pages.get(page);
+    if (known !== undefined) return known;
+    const created: PageState = {
+      pageIndex: state.nextPageIndex++,
+      requestCount: 0,
+      incomingDocumentRequests: 0,
+      failedRequests: 0,
+    };
+    state.pages.set(page, created);
+    flushBeforeNavigating(page);
+    adoptEarlyDocumentRequest(page, created, earlyDocumentRequests);
+    countRequestsPerDocument(page, created);
+    page.on('requestfailed', () => { created.failedRequests++; });
+    return created;
+  }
+
+  await context.exposeBinding(REPORT_BINDING, async (source, reading: RawReading) => {
+    const pageState = trackPage(source.page);
     let doc = state.openDocs.get(reading.docId);
     if (doc === undefined) {
       // navigationIndex is claimed synchronously at a document's FIRST reading, so
@@ -542,9 +602,10 @@ async function attachCollector(
       // Navigation that goto left behind.
       const opened: OpenDoc = {
         navigationIndex: state.nextNavigationIndex++,
+        pageIndex: pageState.pageIndex,
         route: state.pendingRoute,
-        requestCount: state.requestCount,
-        failedRequests: state.failedRequests,
+        requestCount: pageState.requestCount,
+        failedRequests: pageState.failedRequests,
         reading,
         // A failed write surfaces through state.pending at teardown, never as unhandled.
         timer: setTimeout(() => opened.commit().catch(() => {}), LEAVE_SETTLE_MS),
@@ -568,11 +629,55 @@ async function attachCollector(
     if (reading.final) await doc.commit();
   });
 
-  await page.addInitScript(trapSource(REPORT_BINDING, FLUSH_HOOK));
-  flushBeforeNavigating(page);
+  await context.addInitScript(trapSource(REPORT_BINDING, FLUSH_HOOK));
 
-  countRequestsPerDocument(page, state);
-  page.on('requestfailed', () => { state.failedRequests++; });
+  // Pages already open (a reused context) first, in their order; then each new one —
+  // the `page` fixture's own, context.newPage(), a popup — as the context reports it.
+  for (const page of context.pages()) trackPage(page);
+  context.on('page', (page) => { trackPage(page); });
+  flushBeforeClosingContext(context);
+  context.on('request', (request) => noteEarlyDocumentRequest(request, earlyDocumentRequests));
+  return trackPage;
+}
+
+/**
+ * A popup is reported (context 'page', opener 'popup') only once its first document has
+ * COMMITTED (measured on Chromium, Playwright 1.63). Its document request reaches the
+ * context before that, with no frame or page Node can attribute it to, and never reaches
+ * a page listener. So such orphan document requests are held here by URL (a redirect
+ * chain folds into its last hop), and the page adopts the one its committed URL matches
+ * when it is reported: its first Sample's requestCount is then its own document's, as
+ * for every other Navigation. A request with a page is that page's own listener's.
+ */
+function noteEarlyDocumentRequest(request: Request, early: Map<string, number>): void {
+  let orphan: boolean;
+  try {
+    orphan = request.frame().page() === null;
+  } catch {
+    orphan = true; // no frame (yet)
+  }
+  if (!orphan || !request.isNavigationRequest()) return;
+  let hops = 1;
+  const from = request.redirectedFrom();
+  if (from !== null) {
+    hops += early.get(withoutHash(from.url())) ?? 0;
+    early.delete(withoutHash(from.url()));
+  }
+  early.set(withoutHash(request.url()), hops);
+}
+
+/** A newly reported page whose first document already committed takes its document request. */
+function adoptEarlyDocumentRequest(page: Page, state: PageState, early: Map<string, number>): void {
+  const url = withoutHash(page.mainFrame().url());
+  const hops = early.get(url);
+  if (hops === undefined || url === 'about:blank') return;
+  early.delete(url);
+  state.requestCount = hops;
+}
+
+function withoutHash(url: string): string {
+  const hash = url.indexOf('#');
+  return hash < 0 ? url : url.slice(0, hash);
 }
 
 /**
@@ -585,7 +690,7 @@ async function attachCollector(
  * same-document navigation (pushState, #hash) commits with no document request in
  * flight and resets nothing.
  */
-function countRequestsPerDocument(page: Page, state: CollectorState): void {
+function countRequestsPerDocument(page: Page, state: PageState): void {
   page.on('request', (request) => {
     let isDocumentRequest = false;
     try {
@@ -623,6 +728,18 @@ async function flushCurrentDocument(page: Page): Promise<void> {
 }
 
 /**
+ * The Page methods that leave the current document, patched to flush it first.
+ * test/page-methods.test.ts fails if Playwright ever renames one (a renamed method would
+ * stop flushing), and keeps its copy of this list in step. `close` is here because
+ * page.close() itself flushes nothing: a popup the test closes would otherwise lose its
+ * last Sample.
+ */
+const NAVIGATING_PAGE_METHODS = ['goto', 'reload', 'goBack', 'goForward', 'close'] as const;
+
+/** Pages whose methods are already patched, so a page is never wrapped twice. */
+const patchedPages = new WeakSet<Page>();
+
+/**
  * Flush the current document before a test-driven navigation leaves it. From Playwright
  * 1.63 (Chromium RenderDocument) the leaving document can no longer reach Node once the
  * next one commits — a few ms after beforeunload, often before a just-made
@@ -633,7 +750,12 @@ async function flushCurrentDocument(page: Page): Promise<void> {
  * beforeunload.
  */
 function flushBeforeNavigating(page: Page): void {
-  for (const method of ['goto', 'reload', 'goBack', 'goForward'] as const) {
+  // Patched on THIS page instance as own properties, never on Page.prototype: pages the
+  // collector does not measure (a browser.newContext() of the test's own) keep
+  // Playwright's methods untouched.
+  if (patchedPages.has(page)) return;
+  patchedPages.add(page);
+  for (const method of NAVIGATING_PAGE_METHODS) {
     const navigate = page[method].bind(page) as (...args: unknown[]) => Promise<unknown>;
     (page as unknown as Record<string, unknown>)[method] = async (...args: unknown[]) => {
       await flushCurrentDocument(page);
@@ -642,13 +764,49 @@ function flushBeforeNavigating(page: Page): void {
   }
 }
 
+/** Per context: whether its wrapped close() still has to flush its pages first. */
+const contextCloseGates = new WeakMap<BrowserContext, { armed: boolean }>();
+
 /**
- * Flush the last document's Navigation before the page closes. page.close() flushes
- * nothing, so we drive the trap's own flush, then settle any intermediate flushes still
- * in flight.
+ * A test that closes its context itself (context.close() in the body) would otherwise
+ * lose every open page's last Navigation: closing flushes nothing, and teardown then finds
+ * the pages gone. So close() is wrapped, on this instance, to flush the open pages first.
+ * It reads the pages from the context, not from per-test state, so a context Playwright
+ * reuses across tests stays correct; arming again on reuse never wraps twice.
  */
-async function flushOnTeardown(page: Page, state: CollectorState): Promise<void> {
-  await flushCurrentDocument(page);
+function flushBeforeClosingContext(context: BrowserContext): void {
+  const known = contextCloseGates.get(context);
+  if (known !== undefined) {
+    known.armed = true;
+    return;
+  }
+  const gate = { armed: true };
+  contextCloseGates.set(context, gate);
+  const close = context.close.bind(context) as (...args: unknown[]) => Promise<void>;
+  (context as unknown as Record<string, unknown>)['close'] = async (...args: unknown[]) => {
+    if (gate.armed) {
+      gate.armed = false;
+      for (const page of context.pages()) {
+        if (!page.isClosed()) await flushCurrentDocument(page);
+      }
+    }
+    return close(...args);
+  };
+}
+
+/**
+ * Flush every open page's last document before the context closes. Closing flushes
+ * nothing, so we drive the trap's own flush on each page — one at a time, in open order,
+ * so their navigationIndex claims are deterministic — then settle any intermediate
+ * flushes still in flight.
+ */
+async function flushOnTeardown(context: BrowserContext, state: CollectorState): Promise<void> {
+  // Playwright closes the context right after this; that close need not flush again.
+  const gate = contextCloseGates.get(context);
+  if (gate !== undefined) gate.armed = false;
+  for (const page of state.pages.keys()) {
+    if (!page.isClosed()) await flushCurrentDocument(page);
+  }
   // Documents still settling (left moments ago, or teardown could not reach them) are
   // written now with the last reading they sent.
   for (const doc of state.openDocs.values()) void doc.commit();
@@ -688,7 +846,8 @@ async function writeOutcome(testInfo: TestInfo): Promise<void> {
 
 /**
  * The last test each worker's pusher served — the worker-scoped fixture has no TestInfo of
- * its own, so the Push Status is attached through this one after the drain. Set by `page`.
+ * its own, so the Push Status is attached through this one after the drain. Set by
+ * `context`, the fixture every measured page comes from.
  */
 const pushStatusTarget = new WeakMap<Pusher, TestInfo>();
 
@@ -729,9 +888,10 @@ export interface VitalsControls {
 }
 
 type CollectorFixtures = {
+  context: BrowserContext;
   page: Page;
   vitals: VitalsControls;
-  /** Internal — the per-test state `page` and `vitals` share. Not for testers. */
+  /** Internal — the per-test state `context`, `page` and `vitals` share. Not for testers. */
   _collectorState: CollectorState;
 };
 
@@ -741,14 +901,18 @@ type CollectorWorkerFixtures = {
 };
 
 /**
- * The auto-fixture graph. Overriding `page` means the collector rides along on the exact
- * page the test drives — journey vitals, not a cold re-navigation — and the tester
- * writes nothing. Teardown runs even when the test body throws (try/finally), so every
- * Navigation recorded before a mid-journey crash survives.
+ * The auto-fixture graph. Overriding `context` means the collector rides along on the
+ * exact pages the test drives — journey vitals, not a cold re-navigation — and the
+ * tester writes nothing. Every page opened in that context is measured: `page` (the
+ * context's first page), popups, context.newPage(). A context the test creates itself
+ * with browser.newContext() is outside the fixture graph and is NOT measured. Teardown
+ * runs even when the test body throws (try/finally), so every Navigation recorded before
+ * a mid-journey crash survives.
  *
- * _collectorState is a dependency of BOTH page and vitals, so it sets up first and tears
- * down LAST — after page's teardown flush. That is why the Outcome write lives in ITS
- * teardown: every Sample is already on disk, and testInfo.status is final there.
+ * _collectorState is a dependency of context, page and vitals, so it sets up first and
+ * tears down LAST — after context's teardown flush (which runs before Playwright closes
+ * the context). That is why the Outcome write lives in ITS teardown: every Sample is
+ * already on disk, and testInfo.status is final there.
  *
  * _vitalsPusher is WORKER-scoped: it sets up once when the worker starts and drains once
  * when the worker finishes all its tests (Phase 2). It is the ONLY place on the Engine
@@ -779,9 +943,9 @@ export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
   _collectorState: async ({}, use, testInfo) => {
     const state: CollectorState = {
       nextNavigationIndex: 1,
-      requestCount: 0,
-      incomingDocumentRequests: 0,
-      failedRequests: 0,
+      nextPageIndex: 0,
+      pages: new Map(),
+      trackPage: null,
       pending: [],
       pendingRoute: null,
       openDocs: new Map(),
@@ -791,8 +955,8 @@ export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
   },
 
   // auto: the Outcome must exist for EVERY Execution, including tests that never touch
-  // `page` — and `vitals` existing whether or not a spec destructures it keeps the
-  // surface at one changed import. (A statically-skipped test never sets up fixtures at
+  // `page` or `context` — and `vitals` existing whether or not a spec destructures it
+  // keeps the surface at one changed import. (A statically-skipped test never sets up fixtures at
   // all, so it leaves no record — observed behavior, pinned in the Seam 1 harness.)
   vitals: [
     async ({ _collectorState }, use) => {
@@ -805,14 +969,22 @@ export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
     { auto: true },
   ],
 
-  page: async ({ page, _collectorState, _vitalsPusher }, use, testInfo) => {
+  context: async ({ context, _collectorState, _vitalsPusher }, use, testInfo) => {
     pushStatusTarget.set(_vitalsPusher, testInfo);
-    await attachCollector(page, testInfo, _collectorState, _vitalsPusher);
+    _collectorState.trackPage = await attachCollector(context, testInfo, _collectorState, _vitalsPusher);
     try {
-      await use(page);
+      await use(context);
     } finally {
-      await flushOnTeardown(page, _collectorState);
+      await flushOnTeardown(context, _collectorState);
     }
+  },
+
+  // The context's first page. The context's 'page' event (or, for a page Playwright
+  // reuses, attachCollector's sweep of context.pages()) has already registered it as
+  // pageIndex 0; registering again is idempotent, and only a safety net.
+  page: async ({ page, _collectorState }, use) => {
+    _collectorState.trackPage?.(page);
+    await use(page);
   },
 });
 

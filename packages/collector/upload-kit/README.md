@@ -68,6 +68,10 @@ engines; repeat-each = workers × iterations). With 2 tests in the spec:
   vitals `ok`, and a real `inp` (the search-box typing does real rendering work);
   Navigation-2 and `Single Page` Samples carry
   `inp: {value: null, status: "no-interaction"}` — never 0, never absent.
+- Every Sample carries `pageIndex: 0`: both tests drive only the `page` fixture. A
+  journey that opens a popup or calls `context.newPage()` gets Samples for those pages
+  too, with `pageIndex` 1, 2, … in the order they opened. A context the spec creates
+  itself with `browser.newContext()` is not measured.
 
 ## Why the journey is shaped this way (measured)
 
@@ -79,7 +83,8 @@ the package and the standalone file:
   call made at `pagehide` never reaches Node (a platform behavior). From Playwright
   1.63, Chromium's RenderDocument swaps the frame on EVERY navigation, same-site
   included. The collector now flushes before a test-driven `goto()` /
-  `reload()` / `goBack()` / `goForward()`, and at `beforeunload` for link clicks, so
+  `reload()` / `goBack()` / `goForward()` (and `page.close()`) on every page of the
+  test's context, and at `beforeunload` for link clicks, so
   cross-site journeys keep both Samples (pinned in `test/crosssite.test.ts`).
 - **SPA link clicks are not Navigations.** playwright.dev (Docusaurus) intercepts
   internal links client-side: no document unload, no new document, so by design no
