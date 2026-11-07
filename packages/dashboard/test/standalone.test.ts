@@ -22,7 +22,7 @@ import { buildStandalone, bundle } from '../scripts/build-standalone';
 import { DASHBOARD_VERSION, runCli } from '../src/cli.js';
 import { jsonResponse, bytesResponse, recordingTransport } from './helpers/transport.js';
 import { makeZip } from './helpers/zip.js';
-import { parseBlob } from './helpers/blob.js';
+import { inlineScript, parseBlob } from './helpers/blob.js';
 
 const execFileP = promisify(execFile);
 
@@ -182,6 +182,8 @@ describe('the standalone file behaves as the package does', () => {
     // byte-for-byte except the generation timestamp.
     const reference = parseBlob(referenceHtml);
     expect({ ...data, generatedAt: null }).toEqual({ ...reference, generatedAt: null });
+    // And the same in-browser renderer (E1): the inline bundle is the package's.
+    expect(inlineScript(html)).toBe(inlineScript(referenceHtml));
   }, 60_000);
 
   it('with no arguments it exits 1 and prints usage, like the installed bin', async () => {
@@ -227,9 +229,11 @@ describe('the plain-JavaScript .mjs runs on bare node', () => {
       cwd: workDir,
     });
 
-    const data = parseBlob(await readFile(path.join(workDir, 'report-mjs.html'), 'utf8'));
+    const mjsHtml = await readFile(path.join(workDir, 'report-mjs.html'), 'utf8');
+    const data = parseBlob(mjsHtml);
     const reference = parseBlob(referenceHtml);
     expect({ ...data, generatedAt: null }).toEqual({ ...reference, generatedAt: null });
+    expect(inlineScript(mjsHtml)).toBe(inlineScript(referenceHtml));
   }, 60_000);
 
   it('--version, --help and a malformed command line behave as the package does', async () => {

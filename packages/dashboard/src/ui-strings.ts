@@ -89,6 +89,15 @@ export const UI_STRINGS = {
     'one point per measured Sample, at absolute wall-clock time (UTC) — Samples with nothing measured are not plotted',
   timelineChartAria: 'measured Samples over wall-clock time (UTC)',
   unitlessWord: 'unitless',
+
+  // The in-browser render (E1) and its fallback — the Route table at p75 with
+  // coverage, server-rendered, shown whenever the interactive report is not.
+  loadingNote: 'building the interactive report from the embedded data…',
+  noscriptNote:
+    'JavaScript is off: this is the p75 summary only. The include-failed toggle, the drill-downs and the timeline need JavaScript.',
+  noDecompressionNote:
+    'this browser cannot unpack the embedded data (it has no DecompressionStream) — showing the p75 summary only. Any current Chrome, Edge, Firefox or Safari can.',
+  renderFailedNote: 'the interactive report failed to load — showing the p75 summary only:',
 } as const;
 
 export type UiStringKey = keyof typeof UI_STRINGS;

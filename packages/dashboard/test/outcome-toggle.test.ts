@@ -4,9 +4,13 @@
 // deletes exactly the slowest Samples (the real 4 failures were CWV budget
 // breaches — they failed BECAUSE the vitals were slow), biasing every
 // percentile faster, silently and directionally. So failed Executions are
-// INCLUDED by default, the exclude view is a fully server-rendered second
-// variant (the inline script only swaps `hidden` — it decides nothing), and
-// the outcome breakdown sits next to the numbers the choice changes.
+// INCLUDED by default, the exclude view is a second variant the browser
+// recomputes from the same data on the toggle's first flip (E1), and the
+// outcome breakdown sits next to the numbers the choice changes.
+//
+// The rendered-string assertions run on renderedHtml(): the markup the browser
+// renders into #bzm-app, built in Node by the same functions —
+// test/browser-render.test.ts proves the page's DOM matches it.
 //
 // Partial states are the normal case: outcome-awareness unavailable (legacy)
 // is said in words and never implies all-passed; a missing Outcome among
@@ -27,7 +31,8 @@ import type { ReportData, SessionSummary } from '../src/report.js';
 import { buildReportVariants } from '../src/view-model.js';
 import { renderHtml } from '../src/render.js';
 import { UI_STRINGS as S } from '../src/ui-strings.js';
-import { BLOB_RE, parseBlob } from './helpers/blob.js';
+import { parseBlob, staticMarkup } from './helpers/blob.js';
+import { renderedHtml } from './helpers/rendered.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -302,26 +307,26 @@ describe('buildReportVariants — both views built server-side, include is the d
 
 // ------------------------------------------------------- rendered strings
 
-describe('render — the toggle and both variants, server-side', () => {
-  it('with failures: checkbox checked (include is default), excluded variant embedded hidden', () => {
-    const html = renderHtml(measuredCase());
+describe('render — the toggle and both variants', () => {
+  it('with failures: checkbox checked (include is default), excluded variant container hidden', () => {
+    const html = renderedHtml(measuredCase());
     expect(html).toContain('id="bzm-include-failed" checked');
     expect(html).not.toContain('id="bzm-include-failed" checked disabled');
     expect(html).toMatch(/id="bzm-variant-included"/);
     expect(html).toMatch(/id="bzm-variant-excluded" hidden/);
-    // Both variants' drill rows exist server-side under distinct ids.
+    // Both variants' drill rows exist under distinct ids.
     expect(html).toContain('id="drill-inc-0"');
     expect(html).toContain('id="drill-exc-0"');
     expect(html).toContain('aria-controls="drill-inc-0"');
     expect(html).toContain('aria-controls="drill-exc-0"');
     // The excluded variant restates what it dropped, with the denominator.
     expect(html).toContain(`${S.excludedNote} — 8 ${S.ofWord} 10 ${S.samplesWord}`);
-    // The blob still carries the RAW data — Seam 2 contract untouched.
-    expect(parseBlob(html).samples).toHaveLength(10);
+    // The file's blob still carries the RAW data — Seam 2 contract untouched.
+    expect(parseBlob(renderHtml(measuredCase())).samples).toHaveLength(10);
   });
 
   it('breakdown line: "2 of 10 Executions failed" next to the toggle', () => {
-    const html = renderHtml(measuredCase());
+    const html = renderedHtml(measuredCase());
     expect(html).toContain(`2 ${S.ofWord} 10 ${S.executionsWord} failed`);
   });
 
@@ -340,7 +345,7 @@ describe('render — the toggle and both variants, server-side', () => {
       ],
       outcomes,
     );
-    const html = renderHtml(data);
+    const html = renderedHtml(data);
     expect(html).toContain(`3 ${S.ofWord} 4 ${S.executionsWord} failed`);
     expect(html).toContain('1 failed · 1 timed out · 1 crashed before finishing');
   });
@@ -350,7 +355,7 @@ describe('render — the toggle and both variants, server-side', () => {
       [mk({ test: tid(0) }), mk({ test: tid(1) })],
       [outcome('r-v4-eng-a', tid(0), 'passed'), outcome('r-v4-eng-a', tid(1), 'passed')],
     );
-    const html = renderHtml(data);
+    const html = renderedHtml(data);
     expect(html).toContain(`all 2 ${S.executionsWord} passed`);
     expect(html).toContain('id="bzm-include-failed" checked disabled');
     expect(html).toContain(S.toggleDisabledNothingExcludable);
@@ -362,13 +367,13 @@ describe('render — the toggle and both variants, server-side', () => {
       [mk({ test: tid(0) })],
       [outcome('r-v4-eng-a', tid(0), 'passed'), outcome('r-v4-eng-a', tid(1), 'skipped')],
     );
-    const html = renderHtml(data);
+    const html = renderedHtml(data);
     expect(html).toContain(`1 ${S.ofWord} 2 ${S.executionsWord} passed — 1 skipped`);
     expect(html).toContain('id="bzm-include-failed" checked disabled');
   });
 
   it('legacy (zero Outcome records): breakdown says outcomes unavailable in words — never all-passed — and the toggle is disabled with the reason', () => {
-    const html = renderHtml(reportData([mk({ test: null }), mk({ test: null })]));
+    const html = renderedHtml(reportData([mk({ test: null }), mk({ test: null })]));
     expect(html).toContain(S.outcomesUnavailable);
     expect(html).toContain('id="bzm-include-failed" checked disabled');
     expect(html).toContain(S.toggleDisabledNoOutcomes);
@@ -379,7 +384,7 @@ describe('render — the toggle and both variants, server-side', () => {
   it('zero Samples: static "no samples", and no toggle at all', () => {
     const data = reportData([]);
     data.sessions.push(sessionSummary('r-v4-eng-a', 'us-west-1'));
-    const html = renderHtml(data);
+    const html = renderedHtml(data);
     expect(html).toContain('<p class="no-samples">');
     expect(html).not.toContain('id="bzm-include-failed"'); // no toggle element at all
   });
@@ -392,7 +397,7 @@ describe('render — partial states in words', () => {
       [outcome('r-v4-eng-a', tid(0), 'passed')],
     );
     expect(data.samples.find((s) => s.sample.test?.repeat === 1)!.executionStatus).toBe('crashed');
-    const html = renderHtml(data);
+    const html = renderedHtml(data);
     expect(html).toContain(`<span class="flag bad">${S.outcomeCrashedBeforeFinishing}</span>`);
   });
 
@@ -406,7 +411,7 @@ describe('render — partial states in words', () => {
         },
       }),
     ]);
-    const html = renderHtml(data);
+    const html = renderedHtml(data);
     expect(html).toContain(S.unknownLegacy); // 'unknown — legacy collector cannot say why'
     expect(html).toContain('unsupported');
     expect(html).toContain('no interaction');
@@ -421,13 +426,13 @@ describe('render — partial states in words', () => {
       [],
       [sessionSummary('r-v4-eng-dead', 'us-west-2', 'no-artifact')],
     );
-    const html = renderHtml(data);
+    const html = renderedHtml(data);
     expect(html).toContain(`${S.subsetCovers} 1 ${S.ofWord} 2 ${S.enginesHeading}`);
     expect(html).toContain(S.noArtifact);
   });
 
   it('all artifacts present → no subset note', () => {
-    const html = renderHtml(reportData([mk()]));
+    const html = renderedHtml(reportData([mk()]));
     expect(html).not.toContain(S.subsetCovers);
   });
 });
@@ -493,9 +498,9 @@ describe('no code path renders a null as 0 — walked over every status', () => 
   });
 
   it('rendered strings: with zero ok values anywhere, no cell or point renders a value — no "0 ms", no lead numbers', () => {
-    const html = renderHtml(everyStatusData());
-    // Assert on the STATIC markup only — the blob legitimately carries raw data.
-    const staticHtml = html.replace(BLOB_RE, '');
+    // The rendered report, and the file's server-rendered fallback summary
+    // (the blob legitimately carries raw data; the bundle is code).
+    const staticHtml = renderedHtml(everyStatusData()) + staticMarkup(renderHtml(everyStatusData()));
     expect(staticHtml).not.toContain('0 ms'); // the canonical lie this project exists to stop
     // Every metric-cell lead is a reason, never a number.
     const leads = [...staticHtml.matchAll(/<div class="lead([^"]*)">/g)];

@@ -157,3 +157,38 @@ committed corpus — archiving is a storage tier, not an expiry, so a Report's z
 stay reachable long after the run. Anyone with account access can repopulate the
 cache. The **one** committed exception is the stripped probe collision fixture in
 `test/fixtures/probe/` (see its README).
+
+## The report file, and how its inline script is built
+
+`report.html` holds three things, all inline (its Content-Security-Policy lets it
+load nothing else):
+
+1. **The data, once**: the `ReportData` (attributed Samples, Outcomes, sessions,
+   Route rows) as gzip-compressed, base64-encoded JSON in
+   `<script type="application/gzip" data-encoding="base64" id="bzm-vitals-data">`.
+2. **The code, once**: `src/browser/entry.ts` bundled for the browser. It unpacks
+   the data with `DecompressionStream('gzip')`, builds the view with the same
+   `view-model.ts` Node uses, and renders it with the same markup functions
+   (`src/browser/views.ts`). The include-failed toggle recomputes the excluded
+   view in the browser on its first flip, and each Route's drill-down is built
+   when it is first opened.
+3. **A fallback**: the Route table at p75 with coverage, rendered by Node, plus a
+   `<noscript>` note. It stays in place, with the reason stated, when JavaScript
+   is off, `DecompressionStream` is missing, or the render fails.
+
+The bundle is generated, never committed: `scripts/build-browser.ts` runs esbuild
+over `src/browser/entry.ts` (with `bzm-vitals-format` read from its source) and
+writes the string constant `src/browser/bundle.generated.ts`, which `render.ts`
+imports. The build fails if the bundle would import anything — platform `browser`
+cannot resolve `node:*`, so `view-model.ts` stays isomorphic. Every path that
+needs the bundle rebuilds it first:
+
+| Command | How |
+|---|---|
+| `npm run typecheck` (root or this package), `npm run build` | `npm run build:browser` before `tsc --build` |
+| `npm test` / any `vitest run` | `test/global-setup.ts` (vitest `globalSetup`) |
+| `npm run build:standalone` | `scripts/build-standalone.ts` calls it before bundling `src/cli.ts` |
+
+`test/browser-render.test.ts` is the drift guard: in Chromium, the view the page
+builds must deep-equal the one Node builds from the same data, and the page's DOM
+must equal the markup Node renders with the same functions.

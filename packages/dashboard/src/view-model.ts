@@ -1,10 +1,16 @@
 // The view model — everything the renderer needs, precomputed as plain data.
 //
-// The rendering layer (render.ts) consumes this and decides NOTHING: threshold
-// dots (p75 only — the dot is a field that exists once per cell, structurally),
-// the Route → Test → Engine → Navigation drill-down groupings, the blend
-// caveat, histogram bins, and the per-Engine p75 spread are all computed here,
-// where they are unit-testable. Rendering geometry is deliberately not tested;
+// ISOMORPHIC (E1): this module runs in Node (the drift guard, the fallback
+// summary) AND in the browser — esbuild bundles it, unchanged, into the
+// report's one inline <script> (src/browser/entry.ts). So: no node:* imports,
+// no I/O, no globals, pure functions only. The browser and Node must build
+// deep-equal views from the same ReportData (test/browser-render.test.ts).
+//
+// The rendering layer (src/browser/views.ts) consumes this and decides
+// NOTHING: threshold dots (p75 only — the dot is a field that exists once per
+// cell, structurally), the Route → Test → Engine → Navigation drill-down
+// groupings, the blend caveat, histogram bins, and the per-Engine p75 spread
+// are all computed here, where they are unit-testable. Rendering geometry is deliberately not tested;
 // it is looked at.
 //
 // Vocabulary (CONTEXT.md): Test identity is `test.id` when the record carries
@@ -371,9 +377,14 @@ const LEGACY_KEY = '\u0000legacy';
  *  one, else the (file, title, project) triple — with an id-less Sample folded
  *  into the one id its triple carries elsewhere in the Report, so an old and a
  *  new collector's Samples of the same Test stay one Test (testKeyResolver). */
-type TestKeyOf = (s: AttributedSample) => string;
+export type TestKeyOf = (s: AttributedSample) => string;
 
-function testKeyFor(samples: AttributedSample[]): TestKeyOf {
+/** Build the Report-wide Test key function. Build it ONCE from the FULL
+ *  Sample set and hand it to every variant (buildView's `testKey`), so a
+ *  Test's group key is the same whether failed Executions are included or
+ *  not — an id-less Sample folded into an id seen only on a failed Execution
+ *  must not change key when that Execution is excluded. */
+export function testKeyFor(samples: AttributedSample[]): TestKeyOf {
   const resolve = testKeyResolver(samples, (s) => s.sample.test);
   return (s) => {
     const t = s.sample.test;
@@ -564,19 +575,47 @@ function buildTestGroups(
   return groups;
 }
 
-/** Build the whole precomputed view from a ReportData. Pure. */
-export function buildView(data: ReportData): ReportView {
-  // Column order: the known five first, then whatever else the open name set
-  // carried, alphabetically — stable across Reports.
+/** Column order: the known five first, then whatever else the open name set
+ *  carried, alphabetically — stable across Reports. */
+function metricNamesOf(routes: RouteRow[]): string[] {
   const seen = new Set<string>();
-  for (const row of data.routes) for (const name of Object.keys(row.metrics)) seen.add(name);
-  const metricNames = [
+  for (const row of routes) for (const name of Object.keys(row.metrics)) seen.add(name);
+  return [
     ...KNOWN_METRIC_ORDER.filter((n) => seen.has(n)),
     ...[...seen].filter((n) => !KNOWN_METRIC_ORDER.includes(n)).sort(),
   ];
+}
 
+/** The landing table alone — Route, Samples, one cell per metric — with no
+ *  drill-down, histogram or timeline. Cheap at any scale: it reads the
+ *  precomputed RouteRows only. The server renders the no-JS fallback from it
+ *  (the p75 + coverage summary); its cells are buildView's cells exactly. */
+export interface RouteSummaryView {
+  metricNames: string[];
+  totalSamples: number;
+  routes: Array<Pick<RouteView, 'route' | 'sampleCount' | 'coldStarts' | 'cells'>>;
+}
+
+export function buildRouteSummary(data: ReportData): RouteSummaryView {
+  const metricNames = metricNamesOf(data.routes);
+  return {
+    metricNames,
+    totalSamples: data.samples.length,
+    routes: data.routes.map((row) => ({
+      route: row.route,
+      sampleCount: row.sampleCount,
+      coldStarts: row.coldStarts,
+      cells: metricNames.map((name) => buildCell(name, row)),
+    })),
+  };
+}
+
+/** Build the whole precomputed view from a ReportData. Pure.
+ *  `testKey` defaults to a key function over `data.samples`; a variant over a
+ *  subset passes the full Report's (testKeyFor) so group keys stay stable. */
+export function buildView(data: ReportData, testKey: TestKeyOf = testKeyFor(data.samples)): ReportView {
+  const metricNames = metricNamesOf(data.routes);
   const sessionOrder = new Map<string, number>(data.sessions.map((s, i) => [s.sessionId, i]));
-  const testKey = testKeyFor(data.samples);
 
   // The Route pools, matching aggregateRoutes' grouping exactly.
   const pools = new Map<string, AttributedSample[]>();
@@ -633,8 +672,9 @@ export function buildView(data: ReportData): ReportView {
 // ------------------------------------------- the include-failed toggle (#9)
 
 /**
- * Both variants of the report, built server-side. The inline script only swaps
- * which one is visible — it decides nothing.
+ * Both variants of the report. The browser builds them (src/browser/entry.ts):
+ * `included` at load, `excluded` on the first flip of the toggle — through
+ * buildExcludedView, the same function buildReportVariants calls here.
  */
 export interface ReportVariants {
   /** The breakdown behind "4 of 50 Executions failed" — and the toggle state. */
@@ -650,21 +690,39 @@ export interface ReportVariants {
   excluded: ReportView | null;
 }
 
-/** Build both views from one ReportData. Pure — the blob's raw data is never
- *  touched; each variant recomputes aggregates and timeline from its pool. */
-export function buildReportVariants(data: ReportData): ReportVariants {
-  const outcomes = summarizeOutcomes(data.samples, data.outcomes);
-  const included = buildView(data);
-  let excluded: ReportView | null = null;
-  if (outcomes.aware && outcomes.excludable > 0) {
-    const kept = excludeFailedExecutions(data.samples);
-    excluded = buildView({
+/** Is there anything for the toggle to do? false = no excluded variant. */
+export function hasExcludedVariant(outcomes: OutcomeSummary): boolean {
+  return outcomes.aware && outcomes.excludable > 0;
+}
+
+/** The opt-out view, recomputed over excludeFailedExecutions(samples); null
+ *  exactly when hasExcludedVariant is false. Pure. */
+export function buildExcludedView(
+  data: ReportData,
+  outcomes: OutcomeSummary,
+  testKey: TestKeyOf = testKeyFor(data.samples),
+): ReportView | null {
+  if (!hasExcludedVariant(outcomes)) return null;
+  const kept = excludeFailedExecutions(data.samples);
+  return buildView(
+    {
       ...data,
       samples: kept,
       // The kept Samples carry their flags from the FULL run — never re-marked
       // over the subset, so a filtered-out Cold Start is a gap, not a promotion.
       routes: aggregateRoutes(kept, { coldStartsPreMarked: true }),
-    });
-  }
+    },
+    testKey,
+  );
+}
+
+/** Build both views from one ReportData. Pure — the blob's raw data is never
+ *  touched; each variant recomputes aggregates and timeline from its pool.
+ *  One Test-key function, over the FULL Sample set, serves both variants. */
+export function buildReportVariants(data: ReportData): ReportVariants {
+  const outcomes = summarizeOutcomes(data.samples, data.outcomes);
+  const testKey = testKeyFor(data.samples);
+  const included = buildView(data, testKey);
+  const excluded = buildExcludedView(data, outcomes, testKey);
   return { outcomes, included, excluded };
 }

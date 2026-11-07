@@ -11,13 +11,14 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCli } from '../src/cli.js';
 import { defaultCacheRoot } from '../src/cache.js';
 import { parseBlob } from './helpers/blob.js';
+import { renderedHtml } from './helpers/rendered.js';
 import {
   assembleReportData,
   type EngineRecords,
@@ -25,12 +26,16 @@ import {
   type ReportData,
 } from '../src/report.js';
 import { buildReportVariants } from '../src/view-model.js';
+import { renderHtml } from '../src/render.js';
+import { syntheticEngines } from './helpers/synthetic.js';
+import { appState, chromium, haveChromium, openReport, warnNoChromium } from './helpers/browser.js';
 
 const DEMO_MASTER = '82723459';
 // The repo-root cache that scripts/fetch-cache.ts fills (BZM_VITALS_CACHE_DIR still wins).
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const cacheRoot = defaultCacheRoot({ cwd: REPO_ROOT });
 const cachePresent = existsSync(path.join(cacheRoot, DEMO_MASTER, 'manifest.json'));
+warnNoChromium('report-scale.test.ts');
 
 if (!cachePresent) {
   // Loud, and it names the remedy.
@@ -138,20 +143,24 @@ describe.skipIf(!cachePresent)('report-scale: the real demo Report through the C
   it('legacy Report: the toggle is disabled WITH the reason, and the breakdown says outcomes are unavailable — never all-passed', () => {
     // Zero Outcome records anywhere → outcome-awareness unavailable. The line
     // says so in words; the toggle exists but is disabled with its reason; no
-    // excluded variant is embedded at all.
-    expect(html).toContain('outcome records unavailable — legacy collector');
-    expect(html).toContain('id="bzm-include-failed" checked disabled');
-    expect(html).toContain('cannot exclude — outcome records unavailable');
-    expect(html).not.toContain('id="bzm-variant-excluded"');
-    expect(html).not.toMatch(/all \d+ Executions passed/);
+    // excluded variant exists at all. (The rendered report: see rendered.ts.)
+    const rendered = renderedHtml(data);
+    expect(rendered).toContain('outcome records unavailable — legacy collector');
+    expect(rendered).toContain('id="bzm-include-failed" checked disabled');
+    expect(rendered).toContain('cannot exclude — outcome records unavailable');
+    expect(rendered).not.toContain('id="bzm-variant-excluded"');
+    expect(rendered).not.toMatch(/all \d+ Executions passed/);
   });
 
   it("renders INP's legacy 'unknown' distinctly — the incumbent cannot say why", () => {
+    expect(renderedHtml(data)).toContain('unknown — legacy collector cannot say why');
+    // The no-JS fallback summary says it too.
     expect(html).toContain('unknown — legacy collector cannot say why');
   });
 
   it('emits no pre-signed URL and no external fetchable reference, even at real scale', () => {
     expect(html).not.toContain('storage.blazemeter.com');
+    expect(JSON.stringify(data)).not.toContain('storage.blazemeter.com');
     expect(html).not.toMatch(/<script[^>]+\bsrc\s*=/i);
     expect(html).not.toMatch(/<link[^>]+\bhref\s*=\s*["']?https?:/i);
     expect(html).not.toMatch(/<img[^>]+\bsrc\s*=\s*["']?https?:/i);
@@ -229,4 +238,84 @@ describe('report-scale @slow: 200k synthetic Samples (issue #33)', () => {
     },
     15_000,
   );
+});
+
+// ------------------------------------------- E1: size and speed at scale
+//
+// Issue #43 (E1): the server used to render BOTH variants (failed Executions
+// included and excluded) as full HTML — every Navigation row and every
+// timeline point twice — so the file grew with Samples × charts × variants:
+// 38.2 MB at 20k Samples on the 2026-11-07 measurement. Now the data is
+// embedded ONCE (gzip + base64) and the browser renders it. These NEVER skip:
+// the Samples are synthetic, shaped like a real run (helpers/synthetic.ts).
+//
+// Recorded (this synthetic run: 5 vitals per Navigation, 1 in 10 Executions
+// failed; one developer machine):
+//   20k Samples:  1.27 MiB  (the pre-E1 renderer: 55.0 MiB on the same data)
+//   200k Samples: 12.3 MiB, generated in ~6.5 s, opened in Chromium in ~3.4 s.
+
+const MB = 1024 * 1024;
+
+describe('report-scale E1: a 20k-Sample report', () => {
+  it('is under 8 MiB — the data once, compressed; nothing pre-rendered per Sample', async () => {
+    const data = await assembleReportData({
+      masterId: '90000043',
+      reportName: null,
+      engines: syntheticEngines(20_000),
+    });
+    expect(data.samples).toHaveLength(20_000);
+    const html = renderHtml(data);
+    const bytes = Buffer.byteLength(html, 'utf8');
+    console.log(`[report-scale] 20k-Sample report: ${(bytes / MB).toFixed(2)} MiB`);
+    expect(bytes).toBeLessThan(8 * MB);
+    // The blob round-trips every Sample.
+    expect(parseBlob(html).samples).toHaveLength(20_000);
+  }, 30_000);
+});
+
+describe('report-scale E1 @slow: a 200k-Sample report', () => {
+  let html = '';
+  let generateMs = 0;
+
+  beforeAll(async () => {
+    const t0 = performance.now();
+    const data = await assembleReportData({
+      masterId: '90000043',
+      reportName: null,
+      engines: syntheticEngines(200_000),
+    });
+    html = renderHtml(data);
+    generateMs = performance.now() - t0;
+  }, 60_000);
+
+  it('generates in under 15 s (assemble + render, as the CLI does)', () => {
+    console.log(
+      `[report-scale] 200k-Sample report: generated in ${(generateMs / 1000).toFixed(1)} s, ` +
+        `${(Buffer.byteLength(html, 'utf8') / MB).toFixed(1)} MiB`,
+    );
+    expect(html.length).toBeGreaterThan(0);
+    expect(generateMs).toBeLessThan(15_000);
+  });
+
+  it.skipIf(!haveChromium)('opens in Chromium in under 5 s — rendered and interactive', async () => {
+    const browser = await chromium.launch();
+    const dir = mkdtempSync(path.join(tmpdir(), 'bzm-e1-scale-'));
+    try {
+      const { page, ms, errors } = await openReport(browser, html, dir, { timeout: 60_000 });
+      const timings = await page.evaluate(() => window.bzmVitals?.timings);
+      const nodes = await page.evaluate(() => document.getElementsByTagName('*').length);
+      console.log(
+        `[report-scale] 200k-Sample report: opened in ${(ms / 1000).toFixed(2)} s ` +
+          `(${JSON.stringify(timings)}), ${nodes} DOM elements`,
+      );
+      expect(await appState(page)).toBe('ready');
+      expect(errors).toEqual([]);
+      expect(ms).toBeLessThan(5_000);
+      // The Route table is there, one row per Route.
+      await expect(page.locator('#bzm-variant-included table.routes tr.route-row').count()).resolves.toBe(5);
+    } finally {
+      await browser.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
