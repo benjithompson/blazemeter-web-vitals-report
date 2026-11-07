@@ -12,6 +12,10 @@
 //              NO Outcome exists anywhere — absence is the crash signal, never faked.
 //   routed   — route.spec.ts: vitals.route() lands verbatim on the current Navigation's
 //              Sample; omitting it leaves the field absent and the raw url intact.
+//   identity — identity/ (C1, #40): collision.spec.ts holds two describe blocks with a
+//              same-titled test, and alpha/ + beta/ each hold a same-name.spec.ts. On
+//              (file, title, project) both pairs collide; test.id, titlePath and path
+//              must tell them apart, on Samples and Outcomes alike.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
@@ -36,6 +40,8 @@ let killedSamples: FoundSample[];
 let killedOutcomes: FoundOutcome[];
 let routedSamples: FoundSample[];
 let routedOutcomes: FoundOutcome[];
+let identitySamples: FoundSample[];
+let identityOutcomes: FoundOutcome[];
 
 function outcomesFor(outcomes: FoundOutcome[], title: string): FoundOutcome[] {
   return outcomes.filter((o) => o.outcome.test.title === title);
@@ -55,7 +61,7 @@ beforeAll(async () => {
   const sentinelDir = await mkdtemp(join(tmpdir(), 'bzm-vitals-kill-'));
   const sentinel = join(sentinelDir, 'ready');
 
-  const [outcomesRun, retriedRun, killedRun, routedRun] = await Promise.all([
+  const [outcomesRun, retriedRun, killedRun, routedRun, identityRun] = await Promise.all([
     runPlaywright({ spec: 'outcomes.spec.ts', baseURL: server.url }),
     runPlaywright({ spec: 'retry.spec.ts', baseURL: server.url, args: ['--retries', '1'] }),
     runPlaywright({
@@ -65,19 +71,23 @@ beforeAll(async () => {
       killWhenFileExists: sentinel,
     }),
     runPlaywright({ spec: 'route.spec.ts', baseURL: server.url }),
+    // A directory filter: every spec under fixtures/identity/, in one run.
+    runPlaywright({ spec: 'identity/', baseURL: server.url }),
   ]);
 
-  [outcomesSamples, retriedSamples, killedSamples, routedSamples] = await Promise.all([
+  [outcomesSamples, retriedSamples, killedSamples, routedSamples, identitySamples] = await Promise.all([
     findSamples(outcomesRun.outputDir),
     findSamples(retriedRun.outputDir),
     findSamples(killedRun.outputDir),
     findSamples(routedRun.outputDir),
+    findSamples(identityRun.outputDir),
   ]);
-  [outcomesOutcomes, retriedOutcomes, killedOutcomes, routedOutcomes] = await Promise.all([
+  [outcomesOutcomes, retriedOutcomes, killedOutcomes, routedOutcomes, identityOutcomes] = await Promise.all([
     findOutcomes(outcomesRun.outputDir),
     findOutcomes(retriedRun.outputDir),
     findOutcomes(killedRun.outputDir),
     findOutcomes(routedRun.outputDir),
+    findOutcomes(identityRun.outputDir),
   ]);
 }, 300_000);
 
@@ -199,5 +209,56 @@ describe('vitals.route() — the only knob', () => {
       expect(outcome.status).toBe('passed');
       expect(outcome.retry).toBe(0);
     }
+  });
+});
+
+describe('test identity is unique: test.id, titlePath, path (C1, #40)', () => {
+  it('two same-titled tests in different describe blocks get different test.id and titlePath', () => {
+    const outcomes = outcomesFor(identityOutcomes, 'Same Title');
+    expect(outcomes.length).toBe(2);
+    for (const { outcome } of outcomes) {
+      expect(outcome.status).toBe('passed');
+      // The legacy triple genuinely collides: same file, title and project.
+      expect(outcome.test.file).toBe('collision.spec.ts');
+      expect(outcome.test.project).toBe('chromium');
+      expect(typeof outcome.test.id).toBe('string');
+      expect(outcome.test.id!.length).toBeGreaterThan(0);
+      expect(outcome.test.path).toBe('identity/collision.spec.ts');
+    }
+    const [a, b] = outcomes.map((o) => o.outcome.test);
+    expect(a!.id).not.toBe(b!.id);
+    // titlePath is the describe chain plus the title, without the leading file element
+    // (Playwright 1.63's titlePath[0] is the spec path; the project name is not in it).
+    const paths = outcomes.map((o) => o.outcome.test.titlePath).sort((x, y) => x![0]!.localeCompare(y![0]!));
+    expect(paths).toEqual([
+      ['Checkout', 'Same Title'],
+      ['Search', 'Same Title'],
+    ]);
+  });
+
+  it('each Sample carries the same identity as its own Outcome', () => {
+    const outcomes = outcomesFor(identityOutcomes, 'Same Title');
+    const samples = samplesFor(identitySamples, 'Same Title');
+    expect(samples.length).toBe(2);
+    for (const { outcome } of outcomes) {
+      const own = samples.filter((s) => s.sample.test.id === outcome.test.id);
+      expect(own.length).toBe(1);
+      expect(own[0]!.sample.test).toEqual(outcome.test);
+    }
+  });
+
+  it('two same-basename specs in different folders get different path (POSIX, relative to testDir)', () => {
+    const outcomes = outcomesFor(identityOutcomes, 'Same Basename');
+    expect(outcomes.length).toBe(2);
+    for (const { outcome } of outcomes) {
+      expect(outcome.test.file).toBe('same-name.spec.ts');
+      expect(outcome.test.titlePath).toEqual(['Same Basename']);
+    }
+    const paths = outcomes.map((o) => o.outcome.test.path).sort();
+    expect(paths).toEqual(['identity/alpha/same-name.spec.ts', 'identity/beta/same-name.spec.ts']);
+    expect(new Set(outcomes.map((o) => o.outcome.test.id)).size).toBe(2);
+
+    const samplePaths = samplesFor(identitySamples, 'Same Basename').map((s) => s.sample.test.path).sort();
+    expect(samplePaths).toEqual(paths);
   });
 });

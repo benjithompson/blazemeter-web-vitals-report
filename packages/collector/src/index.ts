@@ -31,7 +31,7 @@
 import { test as base, expect } from '@playwright/test';
 import type { Page, TestInfo } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { basename, relative, sep } from 'node:path';
 import {
   SCHEMA_VERSION,
   SAMPLE_ATTACHMENT_PREFIX,
@@ -442,7 +442,19 @@ function metric(raw: RawMetric | undefined): Metric {
 }
 
 /** The identity every record carries — the same fields on a Sample and its Outcome, so
- *  the (repeat, worker) join is between values read from ONE source at ONE place. */
+ *  the (repeat, worker) join is between values read from ONE source at ONE place.
+ *
+ *  (file, title, project) is kept exactly as 0.2.x wrote it, but it collides: two
+ *  describe blocks may hold the same title, and two folders the same spec basename.
+ *  `id`, `titlePath` and `path` disambiguate:
+ *  - `id` is Playwright's testId, which hashes the spec path, the title path and the
+ *    project, so it is unique per Test and stable across runs and Engines.
+ *  - `titlePath` drops element 0, which in Playwright 1.63 is the spec path relative to
+ *    testDir (already in `path`). The project name is NOT in testInfo.titlePath (it is
+ *    in `project`), so nothing else is dropped: what remains is the describe chain plus
+ *    the title.
+ *  - `path` is relative to the project's testDir, with POSIX separators so a Windows
+ *    and a Linux Engine write the same key. */
 function testIdentity(testInfo: TestInfo): TestIdentity {
   return {
     file: basename(testInfo.file),
@@ -450,6 +462,9 @@ function testIdentity(testInfo: TestInfo): TestIdentity {
     project: testInfo.project.name,
     repeat: testInfo.repeatEachIndex,
     worker: testInfo.workerIndex,
+    id: testInfo.testId,
+    titlePath: testInfo.titlePath.slice(1),
+    path: relative(testInfo.project.testDir, testInfo.file).split(sep).join('/'),
   };
 }
 
