@@ -13,6 +13,10 @@ Two pieces:
   one self-contained `report.html`. No server, no credentials inside, safe to
   email.
 
+**Node:** 22 or later is recommended, and it is what CI tests (22 and 24).
+Node 20 or later is supported — every package's `engines` field says
+`"node": ">=20"`.
+
 **Want the whole flow as ready-to-upload files?** [`examples/`](examples)
 holds a complete kit — an example spec to follow, `config.yml`,
 `playwright.config.ts`, `package.json` — with a step-by-step walkthrough.
@@ -158,7 +162,7 @@ already installed.
 
 Both pieces also ship as single generated files, for Engines with no registry
 access and for machines where `npm install` isn't an option. Open the
-[latest GitHub release](../../releases/latest) and download them from its
+[latest GitHub release](https://github.com/benjithompson/blazemeter-web-vitals-report/releases/latest) and download them from its
 **Assets** list. Every release made by the release workflow carries all three
 files, built from the release commit. The release notes say which collector
 and dashboard versions they are, and each file's header comment repeats it.

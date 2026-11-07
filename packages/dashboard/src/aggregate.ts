@@ -1,4 +1,4 @@
-// The aggregation model (issue #6) — one module owning the model; the renderer
+// The aggregation model — one module owning the model; the renderer
 // consumes a plain data shape.
 //
 // The rules, all load-bearing (SPEC.md → "Aggregation semantics"):
@@ -28,8 +28,9 @@
 //   - no minimum sample count: an n=2 aggregate computes normally and its
 //     coverage makes it visible rather than misleading.
 //
-// Route derivation is crude pending issue #7: the URL's path with query and
-// fragment stripped. A declared route always wins; the raw URL is always kept.
+// Route derivation is the format's routeOf: a declared Route wins verbatim;
+// otherwise the URL's pathname, with query and fragment stripped. The raw URL is
+// always kept, so a Route can be re-derived from it.
 
 import { routeOf } from 'bzm-vitals-format';
 import type { AttributedOutcome, AttributedSample, SampleExecutionStatus } from './attribute.js';
@@ -48,7 +49,7 @@ export function percentile(values: ArrayLike<number>, q: number): number {
 /**
  * Several percentiles of one value set, by the pinned method — the SAME
  * values sorting would give (sorted[floor((n-1)*q)]), found by selection
- * instead (E3): an in-place quickselect on one Float64Array copy, O(n) per
+ * instead: an in-place quickselect on one Float64Array copy, O(n) per
  * percentile rather than a comparator sort per call. `qs` in any order; the
  * input is never reordered. A NaN in the input (never in parsed data) falls
  * back to a full typed sort, which orders NaN last.
@@ -222,7 +223,7 @@ export function tripleKeyOf(test: TestIdentityKeyFields): string {
 const ID_KEY_PREFIX = '\u0000id\u0000';
 
 /**
- * Build a Test-key function over one scope of records (D6). A record carrying
+ * Build a Test-key function over one scope of records. A record carrying
  * a testId keys on it. A record without one (an older collector) keys on its
  * triple — UNLESS, within the same scope, that triple was seen carrying
  * exactly ONE id, in which case it folds into that Test: the same Test written
@@ -409,7 +410,7 @@ interface MetricTally {
   breakdown: Record<string, number>;
 }
 
-/** Every metric the pool carries, aggregated in ONE pass over the pool (E3):
+/** Every metric the pool carries, aggregated in ONE pass over the pool:
  *  each Sample's vitals are walked once, instead of once per metric name.
  *  Metric names keep their first-seen order; a Sample missing a metric counts
  *  toward its 'not-carried' — the same aggregates the per-metric walk gave. */
@@ -535,7 +536,7 @@ export function aggregateRoutes(
     rows.push({ route, sampleCount: pool.length, coldStarts, metrics });
   }
 
-  // Busiest Route first — a stable ordering pending issue #7's table.
+  // Busiest Route first, ties by Route name, so the ordering is stable run to run.
   rows.sort((a, b) => b.sampleCount - a.sampleCount || a.route.localeCompare(b.route));
   return rows;
 }

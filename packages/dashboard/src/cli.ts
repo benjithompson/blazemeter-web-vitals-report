@@ -282,7 +282,7 @@ async function buildFromApi(
 // npm installs the bin as a SYMLINK (node_modules/.bin/… -> dist/cli.js), so
 // process.argv[1] is the symlink path while import.meta.url is realpath-
 // resolved. Comparing them raw never matches through the installed bin, and the
-// CLI silently no-ops (shipped broken in 0.1.0). Realpath-resolve argv[1] first;
+// CLI would silently no-op. Realpath-resolve argv[1] first;
 // fall back to the raw compare if it can't be resolved. Pure and exported so the
 // resolution logic is unit-tested without spawning a process (test/cli-entry).
 export function isEntryPoint(

@@ -71,7 +71,7 @@ export const UI_STRINGS = {
   binTooltipSuffix: 'Samples',
   histogramEmptyNote: 'distribution over measured Samples in this Route',
 
-  // Outcome breakdown + the include-failed toggle (issue #9). Include is the
+  // Outcome breakdown + the include-failed toggle. Include is the
   // DEFAULT: excluding failed Executions deletes exactly the slowest Samples
   // (the real failures were CWV budget breaches), flattering every percentile.
   executionsWord: 'Executions',
@@ -85,7 +85,7 @@ export const UI_STRINGS = {
 
   // Timeline — vitals over the run's wall-clock (below the Route table). The
   // times read in the viewer's local time zone by default, or in UTC by the
-  // toggle (E3); the zone in force is named beside the toggle and on the axis.
+  // toggle; the zone in force is named beside the toggle and on the axis.
   timelineHeading: 'Timeline',
   timelineNote:
     'one point per measured Sample, at absolute wall-clock time — Samples with nothing measured are not plotted',
@@ -100,7 +100,7 @@ export const UI_STRINGS = {
   showWord: 'show',
   moreOfWord: 'more of',
 
-  // The in-browser render (E1) and its fallback — the Route table at p75 with
+  // The in-browser render and its fallback — the Route table at p75 with
   // coverage, server-rendered, shown whenever the interactive report is not.
   loadingNote: 'building the interactive report from the embedded data…',
   noscriptNote:

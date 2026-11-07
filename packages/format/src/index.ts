@@ -143,9 +143,11 @@ export function isExecutionStatus(x: unknown): x is ExecutionStatus {
 }
 
 /**
- * One per Execution, attached in afterEach. Joins to Samples on (repeat, worker).
- * A MISSING outcome record means the Execution crashed before finishing — that
- * absence is a signal, never papered over.
+ * One per Execution, written in fixture teardown, where testInfo.status is final. A
+ * reader joins it to its Samples within one Engine (sessionId) on the Test, `repeat` and
+ * `worker`, where the Test is `test.id` when the record carries one and the
+ * (file, title, project) triple otherwise. A MISSING outcome record means the Execution
+ * crashed before finishing — that absence is a signal, never papered over.
  */
 export interface ExecutionOutcome {
   schemaVersion: typeof SCHEMA_VERSION;

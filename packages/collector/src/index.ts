@@ -7,12 +7,11 @@
 // call, no teardown hook the tester owns. Every Navigation the test drives leaves one
 // Sample JSON file on disk (format v1), written to outputPath() then attach({ path }).
 //
-// Issue #1 cut the seams (an in-page trap that flushes on its own listeners; a Node-side
-// binding that assembles and writes the Sample); issue #3 filled in the metric set: all
-// five vitals — TTFB, FCP, LCP, CLS, INP — each as {value, status}, every status true.
-// Issue #4 added the rest of the tester-facing surface: one Execution Outcome record per
-// test (written in fixture teardown, where testInfo.status is final), and vitals.route()
-// — the only knob, and an optional one.
+// Two seams: an in-page trap that flushes on its own listeners, and a Node-side binding
+// that assembles and writes the Sample. A Sample carries all five vitals — TTFB, FCP,
+// LCP, CLS, INP — each as {value, status}. The rest of the tester-facing surface is one
+// Execution Outcome record per test (written in fixture teardown, where testInfo.status
+// is final), and vitals.route() — the only knob, and an optional one.
 //
 // The load-bearing decisions, all measured on real Engines (see SPEC.md):
 //   * attach({ body }) writes NOTHING under Taurus and errors nowhere. The write-file-
@@ -22,7 +21,7 @@
 //   * page.close() flushes nothing, so the fixture flushes in teardown BEFORE the context
 //     closes, and a test's own page.close() flushes first — via a synthetic event the
 //     hand-rolled listener still receives.
-//   * Instrumentation is per CONTEXT (C6, #42): every page the test opens in the
+//   * Instrumentation is per CONTEXT: every page the test opens in the
 //     fixture-provided context is measured — the `page` fixture, popups and
 //     context.newPage() alike — and each Sample says which page by its pageIndex.
 //   * A binding call from a document's pagehide never reaches Node once its frame is

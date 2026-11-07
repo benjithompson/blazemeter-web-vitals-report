@@ -87,7 +87,7 @@ export function engineLabels(
   return labels;
 }
 
-/** Stamp one Sample with the identity of the zip it was extracted from. */
+/** Stamp one Sample with the identity of the zip it was read from. */
 export function attributeSample(
   sample: DashboardSample,
   provenance: SampleProvenance,

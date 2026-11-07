@@ -55,7 +55,7 @@ export interface MasterManifest {
    *  carried none. Persisted so the warm cache renders offline, no refetch. */
   reportName: string | null;
   /** The master's status when this manifest was written (ENDED, RUNNING, …).
-   *  Absent from manifests written before D1; those are judged by their
+   *  Absent from older manifests; those are judged by their
    *  sessions' statuses instead (see masterStatusOf). */
   masterStatus?: string | null;
   sessions: SessionCacheEntry[];
@@ -301,8 +301,8 @@ function engineOf(entry: SessionCacheEntry, records: ZipRecords | undefined): En
   };
 }
 
-/** Caches written before D5 also held each zip extracted to {sessionId}/;
- *  nothing reads that copy any more, so it is removed. */
+/** An older cache layout also held each zip extracted to {sessionId}/;
+ *  nothing reads that copy, so it is removed rather than left to rot. */
 async function dropLegacyExtraction(masterDir: string, sessionId: string): Promise<void> {
   // Only ever a plain child of the master dir — never the dir itself, or above it.
   if (!sessionId || sessionId !== path.basename(sessionId) || sessionId.startsWith('.')) return;

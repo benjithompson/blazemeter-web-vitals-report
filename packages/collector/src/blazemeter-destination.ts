@@ -1,4 +1,4 @@
-// The BlazeMeter destination — the only Destination implementation this ships (issue #15).
+// The BlazeMeter destination — the only Destination implementation this ships.
 // It owns EVERYTHING BlazeMeter-specific: the Sample→time-series mapping, the locked
 // metricPath, value encoding, masterId resolution, the injection POST, and api-key auth.
 // The shared pusher (pusher.ts) knows none of this — it hands over neutral format-v1

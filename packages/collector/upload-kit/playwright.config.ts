@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// Standalone-collector upload kit — mirrors the probe config that already ran on
-// BlazeMeter (.scratch/playwright-vitals-dashboard/probe/playwright.config.ts).
+// Standalone-collector upload kit — mirrors a probe config that ran on BlazeMeter
+// (SPEC.md, "The real Taurus invocation").
 //
 // Minimal on purpose. Taurus overrides --output, --workers, --repeat-each,
 // --project and --reporter on the CLI regardless of what's declared here — none

@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-// Builds the report's ONE inline <script> (E1): esbuild bundles src/browser/entry.ts — the
+// Builds the report's ONE inline <script>: esbuild bundles src/browser/entry.ts — the
 // view model and markup code Node runs, unchanged — for the browser, and writes it as a string
 // constant into src/browser/bundle.generated.ts, which render.ts imports. Generated, gitignored,
 // and rebuilt from the real sources by everything that needs it, before it is needed:
