@@ -25,7 +25,11 @@ Engines are **ephemeral** — a given Engine exists only within one Report, and 
 **Engine Label** — the human-facing name, `"{locationId} #{ordinal}"` (`us-west-1 #1`). The label is for people; the `sessionId` is for joining. Never key on the label.
 
 ### Test
-What a tester wrote: the triple **`file` + `title` + `project`**. The unit of authorship.
+What a tester wrote, in one Playwright project. The unit of authorship. Identified by **`test.id`** (Playwright's `testId`) when the record carries one; otherwise — a record from collector 0.2.x — by the triple **`file` + `title` + `project`**. Two Tests that share a spec basename and a title (different `describe` chains, or the same file name in two directories) are one Test under the triple and two under `test.id`.
+
+The report labels a Test with its `titlePath` (the describe chain, joined by ` › `) and its testDir-relative `path` when present, else with `title` and `file`.
+
+When one Report mixes records with and without `test.id` (an old and a new collector), an id-less record joins the one `test.id` its triple carries in the same scope (the same Engine for the Outcome join, the whole Report for grouping). If its triple carries two or more ids, the record is ambiguous and stays a separate Test keyed by the triple — never guessed into either.
 
 The triple can collide: the same title in two `describe` blocks, or the same spec basename in two folders. A record that carries **`test.id`** (Playwright's id for the Test) names the Test by that instead; `titlePath` and `path` are its readable form. Older records without `test.id` fall back to the triple.
 

@@ -117,12 +117,96 @@ export function markColdStarts(samples: AttributedSample[]): AttributedSample[] 
   });
 }
 
-/** The within-session Execution key an Outcome joins on. */
-function executionKey(
-  sessionId: string,
-  test: { file: string; title: string; project: string; repeat: number; worker: number },
-): string {
-  return [sessionId, test.file, test.title, test.project, test.repeat, test.worker].join('\u0000');
+/** The Test identity fields the keys read — structural, so a format
+ *  TestIdentity and a dashboard Sample's test both satisfy it. */
+export interface TestIdentityKeyFields {
+  file: string;
+  title: string;
+  project: string;
+  id?: string;
+}
+
+/** The record's Playwright testId, or undefined when it carries none — a
+ *  0.2.x record, or an empty string (treated as absent, never as an id). */
+export function testIdOf(test: { id?: string }): string | undefined {
+  return typeof test.id === 'string' && test.id !== '' ? test.id : undefined;
+}
+
+/** The pre-id Test key: the (file, title, project) triple. Two Tests sharing a
+ *  file basename and title (a describe chain, or two dirs) collide here. */
+export function tripleKeyOf(test: TestIdentityKeyFields): string {
+  return [test.file, test.title, test.project].join('\u0000');
+}
+
+/** Namespace for id keys: a leading NUL that no triple key starts with
+ *  (a real spec file basename is never empty). */
+const ID_KEY_PREFIX = '\u0000id\u0000';
+
+/**
+ * Build a Test-key function over one scope of records (D6). A record carrying
+ * a testId keys on it. A record without one (an older collector) keys on its
+ * triple — UNLESS, within the same scope, that triple was seen carrying
+ * exactly ONE id, in which case it folds into that Test: the same Test written
+ * by an old and a new collector stays one Test. A triple seen with two or more
+ * ids is ambiguous (that is the collision ids exist to resolve), so id-less
+ * records on it stay on the triple key, never guessed into either Test. With
+ * no ids anywhere in scope, every key is the triple key — exactly the 0.2.x
+ * behaviour.
+ *
+ * `scopeOf` partitions the fold: the join folds within one session, the view
+ * folds across the whole Report.
+ */
+export function testKeyResolver<R>(
+  records: Iterable<R>,
+  testOf: (r: R) => TestIdentityKeyFields | null | undefined,
+  scopeOf: (r: R) => string = () => '',
+): (test: TestIdentityKeyFields, scope?: string) => string {
+  const idsByTriple = new Map<string, Set<string>>();
+  for (const r of records) {
+    const t = testOf(r);
+    if (!t) continue;
+    const id = testIdOf(t);
+    if (id === undefined) continue;
+    const k = scopeOf(r) + '\u0000' + tripleKeyOf(t);
+    const ids = idsByTriple.get(k);
+    if (ids) ids.add(id);
+    else idsByTriple.set(k, new Set([id]));
+  }
+  return (test, scope = '') => {
+    const id = testIdOf(test);
+    if (id !== undefined) return ID_KEY_PREFIX + id;
+    const ids = idsByTriple.get(scope + '\u0000' + tripleKeyOf(test));
+    if (ids && ids.size === 1) return ID_KEY_PREFIX + [...ids][0]!;
+    return tripleKeyOf(test);
+  };
+}
+
+type ExecutionIdentity = TestIdentityKeyFields & { repeat: number; worker: number };
+
+/**
+ * The within-session Execution key an Outcome joins on: (sessionId, Test,
+ * repeat, worker), where Test is the record's testId when it carries one and
+ * the (file, title, project) triple otherwise (see testKeyResolver). worker
+ * stays in the key on both paths: Playwright retries in a fresh worker, so it
+ * is what keeps each attempt's Samples on that attempt's Outcome — dropping it
+ * only on the id path would make a retried Execution read differently
+ * depending on the collector's version.
+ */
+function executionKeyer(
+  samples: AttributedSample[],
+  outcomes: AttributedOutcome[],
+): (sessionId: string, test: ExecutionIdentity) => string {
+  const records: Array<{ sessionId: string; test: ExecutionIdentity | null }> = [
+    ...outcomes.map((o) => ({ sessionId: o.sessionId, test: o.outcome.test })),
+    ...samples.map((s) => ({ sessionId: s.sessionId, test: s.sample.test })),
+  ];
+  const testKey = testKeyResolver(
+    records,
+    (r) => r.test,
+    (r) => r.sessionId,
+  );
+  return (sessionId, test) =>
+    [sessionId, testKey(test, sessionId), test.repeat, test.worker].join('\u0000');
 }
 
 /**
@@ -139,6 +223,7 @@ export function joinOutcomes(
   samples: AttributedSample[],
   outcomes: AttributedOutcome[],
 ): AttributedSample[] {
+  const executionKey = executionKeyer(samples, outcomes);
   const sessionsEmitting = new Set<string>();
   const byExecution = new Map<string, { status: SampleExecutionStatus; retry: number }>();
   for (const { sessionId, outcome } of outcomes) {
@@ -193,6 +278,7 @@ export function summarizeOutcomes(
   // One entry per Execution; a retry is another attempt at the same identity
   // here, and the FINAL retry's verdict is the Execution's — same rule as
   // joinOutcomes, so the line and the join can never disagree.
+  const executionKey = executionKeyer(samples, outcomes);
   const byExecution = new Map<string, { status: string; retry: number }>();
   for (const { sessionId, outcome } of outcomes) {
     const key = executionKey(sessionId, outcome.test);
