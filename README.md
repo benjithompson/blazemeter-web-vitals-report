@@ -70,6 +70,10 @@ npx bzm-vitals-dashboard --master <masterId> --out report.html
 `npx tsx packages/dashboard/src/cli.ts --master <masterId> --out report.html`
 does the same.)
 
+`--help` lists every flag and environment variable; `--version` prints the
+version. A mistyped flag or a flag missing its value exits with code 2 and a
+one-line reason.
+
 Open `report.html` in any browser. Send it to anyone — the reader needs no
 BlazeMeter account, and the file works offline forever.
 
