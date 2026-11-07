@@ -18,6 +18,7 @@ import {
   OUTCOME_ATTACHMENT_PREFIX,
   SAMPLE_ATTACHMENT_PREFIX,
   SCHEMA_VERSION,
+  isExecutionStatus,
   type ExecutionOutcome,
   type Sample,
   type TestIdentity,
@@ -87,10 +88,6 @@ export function isOutcomeAttachment(basename: string): boolean {
   return basename.startsWith(OUTCOME_ATTACHMENT_PREFIX);
 }
 
-/** The format's closed ExecutionStatus vocabulary. Anything else is rejected
- *  loudly — misreading a status would corrupt the crashed-detection signal. */
-const EXECUTION_STATUSES: ReadonlySet<string> = new Set(['passed', 'failed', 'timedOut', 'skipped']);
-
 export type OutcomeParseResult =
   | { ok: true; outcome: ExecutionOutcome }
   | { ok: false; reason: string };
@@ -131,7 +128,9 @@ export function parseOutcomeJson(raw: string): OutcomeParseResult {
   ) {
     return { ok: false, reason: 'missing or incomplete test identity — the Outcome cannot join without it' };
   }
-  if (typeof record.status !== 'string' || !EXECUTION_STATUSES.has(record.status)) {
+  // The format's closed EXECUTION_STATUSES vocabulary. Anything else is rejected
+  // loudly — misreading a status would corrupt the crashed-detection signal.
+  if (!isExecutionStatus(record.status)) {
     return {
       ok: false,
       reason: `status ${JSON.stringify(record.status)} is not in the closed ExecutionStatus vocabulary — rejected, not misread`,

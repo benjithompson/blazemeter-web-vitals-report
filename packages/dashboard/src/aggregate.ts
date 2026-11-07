@@ -31,8 +31,8 @@
 // Route derivation is crude pending issue #7: the URL's path with query and
 // fragment stripped. A declared route always wins; the raw URL is always kept.
 
+import { routeOf } from 'bzm-vitals-format';
 import type { AttributedOutcome, AttributedSample, SampleExecutionStatus } from './attribute.js';
-import type { DashboardSample } from './parse.js';
 
 /**
  * The pinned percentile method: sorted ascending, take sorted[floor((n-1)*q)] —
@@ -49,16 +49,9 @@ export function percentile(values: number[], q: number): number {
   return sorted[Math.floor((sorted.length - 1) * q)]!;
 }
 
-/** Derive the Route for a Sample. A declared Route always wins. */
-export function routeOf(sample: DashboardSample): string {
-  if (sample.route !== undefined) return sample.route;
-  try {
-    return new URL(sample.url).pathname;
-  } catch {
-    // Not URL-parseable — strip query/fragment by hand and keep the rest.
-    return sample.url.split(/[?#]/, 1)[0]!;
-  }
-}
+// Derive the Route for a Sample: format's routeOf, the ONE copy shared with the collector's
+// live sinks. Re-exported so this module stays the aggregation model's single entry point.
+export { routeOf };
 
 /** The breakdown key for a Sample that does not carry the metric at all. */
 export const NOT_CARRIED = 'not-carried';

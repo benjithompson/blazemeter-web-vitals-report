@@ -23,6 +23,7 @@
   "scripts": {
     "build": "tsc --build",
     "typecheck": "tsc --build",
+    "test": "tsc --build && tsc -p test && vitest run",
     "prepublishOnly": "npm run build"
   }
 }

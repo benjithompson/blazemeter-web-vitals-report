@@ -10,7 +10,7 @@
  * doesn't. Metric STATUS is closed — anything unrecognized is treated as not-ok.
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 1 as const;
 
 /**
  * Attachment-name prefixes. Discovery is by prefix: the artifacts zip is flat
@@ -20,14 +20,44 @@ export const SCHEMA_VERSION = 1;
 export const SAMPLE_ATTACHMENT_PREFIX = 'bzm-vitals-sample';
 export const OUTCOME_ATTACHMENT_PREFIX = 'bzm-vitals-outcome';
 
-/** Closed vocabulary. `unknown` is the legacy adapter's alone — the collector never writes it. */
-export type MetricStatus =
-  | 'ok'
-  | 'unsupported'
-  | 'no-interaction'
-  | 'not-finalized'
-  | 'error'
-  | 'unknown';
+/**
+ * The closed Metric status vocabulary — the ONE runtime definition; the type derives from it.
+ * `unknown` is the legacy adapter's alone — the collector never writes it.
+ */
+export const METRIC_STATUSES = [
+  'ok',
+  'unsupported',
+  'no-interaction',
+  'not-finalized',
+  'error',
+  'unknown',
+] as const;
+
+export type MetricStatus = (typeof METRIC_STATUSES)[number];
+
+/**
+ * The subset of METRIC_STATUSES the collector may write: everything except the legacy
+ * adapter's `unknown`. Anything the page reports outside this set is recorded as `error`.
+ */
+export const COLLECTOR_METRIC_STATUSES = [
+  'ok',
+  'unsupported',
+  'no-interaction',
+  'not-finalized',
+  'error',
+] as const satisfies readonly MetricStatus[];
+
+export type CollectorMetricStatus = (typeof COLLECTOR_METRIC_STATUSES)[number];
+
+/** Is `x` a member of the closed Metric status vocabulary? */
+export function isMetricStatus(x: unknown): x is MetricStatus {
+  return (METRIC_STATUSES as readonly unknown[]).includes(x);
+}
+
+/** Is `x` a status the collector may write (the closed vocabulary minus `unknown`)? */
+export function isCollectorMetricStatus(x: unknown): x is CollectorMetricStatus {
+  return (COLLECTOR_METRIC_STATUSES as readonly unknown[]).includes(x);
+}
 
 export interface Metric {
   /** CLS is a true float; any integer-valued consumer converts at its own boundary. */
@@ -72,7 +102,19 @@ export interface Sample {
   };
 }
 
-export type ExecutionStatus = 'passed' | 'failed' | 'timedOut' | 'skipped';
+/**
+ * The Outcome record's closed status vocabulary — the ONE runtime definition. Playwright's
+ * testInfo.status can also be 'interrupted' or undefined: Executions that never finished,
+ * which leave NO Outcome by design.
+ */
+export const EXECUTION_STATUSES = ['passed', 'failed', 'timedOut', 'skipped'] as const;
+
+export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
+
+/** Is `x` a member of the closed ExecutionStatus vocabulary? */
+export function isExecutionStatus(x: unknown): x is ExecutionStatus {
+  return (EXECUTION_STATUSES as readonly unknown[]).includes(x);
+}
 
 /**
  * One per Execution, attached in afterEach. Joins to Samples on (repeat, worker).
@@ -84,4 +126,24 @@ export interface ExecutionOutcome {
   test: TestIdentity;
   status: ExecutionStatus;
   retry: number;
+}
+
+/**
+ * Derive the Route for a record — the ONE routing rule, shared by the collector's live
+ * sinks and the dashboard's file report so a Route is computed identically wherever it
+ * lands. A declared Route always wins, verbatim; otherwise the URL's pathname, with a
+ * hand-rolled query/fragment strip for addresses the URL parser rejects. The raw URL is
+ * never altered — this only computes the grouping key.
+ *
+ * Structural on purpose: it reads only `route` and `url`, so the format Sample and the
+ * dashboard's widened DashboardSample both satisfy it.
+ */
+export function routeOf(record: { readonly route?: string; readonly url: string }): string {
+  if (record.route !== undefined) return record.route;
+  try {
+    return new URL(record.url).pathname;
+  } catch {
+    // Not URL-parseable — strip query/fragment by hand and keep the rest.
+    return record.url.split(/[?#]/, 1)[0]!;
+  }
 }
