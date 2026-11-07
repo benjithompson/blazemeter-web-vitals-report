@@ -4,7 +4,7 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 
 let chromiumPath: string | null = null;
 try {
@@ -18,14 +18,15 @@ export function warnNoChromium(file: string): void {
   if (!haveChromium) console.warn(`${file}: skipping browser checks — no Playwright Chromium installed`);
 }
 
-export { chromium, type Browser, type Page };
+export { chromium, type Browser, type BrowserContext, type Page };
 
 /** The states #bzm-app ends in; 'loading' and 'static' are transient. */
 export const SETTLED = '#bzm-app[data-bzm-state="ready"], #bzm-app[data-bzm-state="error"], #bzm-app[data-bzm-state="unsupported"]';
 
-/** Write `html` into `dir`, open it, and wait for the render to settle. */
+/** Write `html` into `dir`, open it, and wait for the render to settle — in a
+ *  new page of `browser`, or of a context (an emulated time zone, a pixel ratio). */
 export async function openReport(
-  browser: Browser,
+  browser: Browser | BrowserContext,
   html: string,
   dir: string,
   opts: { timeout?: number; before?: (page: Page) => Promise<void> } = {},
@@ -41,6 +42,24 @@ export async function openReport(
   await page.goto(fileUrl, { waitUntil: 'load', timeout: opts.timeout ?? 30_000 });
   await page.waitForSelector(SETTLED, { state: 'attached', timeout: opts.timeout ?? 30_000 });
   return { page, fileUrl, ms: Date.now() - t0, errors };
+}
+
+/** Poll `predicate` in the page until it returns a truthy value (which is
+ *  returned). page.waitForFunction cannot be used here: it evaluates its
+ *  predicate from a string, which the report's CSP (no 'unsafe-eval') blocks. */
+export async function until<A, R>(
+  page: Page,
+  predicate: (arg: A) => R,
+  arg: A,
+  timeout = 30_000,
+): Promise<R> {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const value = await page.evaluate(predicate as (arg: A) => R, arg);
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error(`until: still false after ${timeout} ms`);
+    await page.waitForTimeout(25);
+  }
 }
 
 export async function appState(page: Page): Promise<string | null> {

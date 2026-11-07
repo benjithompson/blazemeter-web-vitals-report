@@ -83,12 +83,22 @@ export const UI_STRINGS = {
   excludedNote: 'failed Executions excluded',
   subsetCovers: 'aggregates cover',
 
-  // Timeline — vitals over the run's wall-clock (below the Route table)
+  // Timeline — vitals over the run's wall-clock (below the Route table). The
+  // times read in the viewer's local time zone by default, or in UTC by the
+  // toggle (E3); the zone in force is named beside the toggle and on the axis.
   timelineHeading: 'Timeline',
   timelineNote:
-    'one point per measured Sample, at absolute wall-clock time (UTC) — Samples with nothing measured are not plotted',
-  timelineChartAria: 'measured Samples over wall-clock time (UTC)',
+    'one point per measured Sample, at absolute wall-clock time — Samples with nothing measured are not plotted',
+  timelineChartAria: 'measured Samples over wall-clock time',
   unitlessWord: 'unitless',
+  fromWord: 'from',
+  toWord: 'to',
+  tzShownLocal: 'times in your local time zone:',
+  tzShownUtc: 'times in UTC',
+  tzUtcToggle: 'show times in UTC',
+  // An Engine's Navigation rows arrive in steps: "show 500 more of 12000 Navigations".
+  showWord: 'show',
+  moreOfWord: 'more of',
 
   // The in-browser render (E1) and its fallback — the Route table at p75 with
   // coverage, server-rendered, shown whenever the interactive report is not.

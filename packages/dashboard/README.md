@@ -170,8 +170,11 @@ load nothing else):
    the data with `DecompressionStream('gzip')`, builds the view with the same
    `view-model.ts` Node uses, and renders it with the same markup functions
    (`src/browser/views.ts`). The include-failed toggle recomputes the excluded
-   view in the browser on its first flip, and each Route's drill-down is built
-   when it is first opened.
+   view in the browser — once the page is idle after first paint, or on the
+   first flip if that comes sooner — and renders it on its first flip. Every
+   drill-down level (Route → Test → Engine → Navigation rows) is built when it
+   is first opened; an Engine's Navigation rows come 500 at a time behind a
+   "show more" button.
 3. **A fallback**: the Route table at p75 with coverage, rendered by Node, plus a
    `<noscript>` note. It stays in place, with the reason stated, when JavaScript
    is off, `DecompressionStream` is missing, or the render fails.
@@ -192,3 +195,24 @@ needs the bundle rebuilds it first:
 `test/browser-render.test.ts` is the drift guard: in Chromium, the view the page
 builds must deep-equal the one Node builds from the same data, and the page's DOM
 must equal the markup Node renders with the same functions.
+
+### The timeline
+
+One chart per metric, every measured Navigation a point at its wall-clock time.
+Each chart is three layers in one box: an SVG behind (gridlines, tick labels, the
+time-zone label, the p75 line), a `<canvas>` with the points
+(`src/browser/canvas.ts`, sized to the box × `devicePixelRatio`, so it stays crisp
+on high-density screens), and an SVG in front (the Cold Start diamonds and the p75
+label). A 200k-Sample report draws its points with no DOM nodes for them. Hovering
+the plot finds the nearest point (`timelineHit`, over the same geometry the canvas
+draws) and shows that Navigation's tooltip. A chart is drawn when it first gets a
+layout box on or near the screen; one further down waits until it is scrolled
+near. Each chart carries a text alternative (`aria-label`): what it plots, how
+many Samples, the span, the p75 and the Cold Starts.
+
+Times read in the viewer's local time zone, named beside the "show times in UTC"
+toggle and on each chart's axis (`EST`, `GMT+5:30`, `UTC`). The toggle re-reads
+the axis labels, the tooltips and the text alternatives in UTC. The tick marks
+stay on clean UTC boundaries, so in a zone with a non-hour offset an hour-step
+tick reads, for example, `10:30:00`. The Navigation rows of a drill-down keep
+their UTC time column (headed `time (UTC)`).

@@ -6,6 +6,17 @@
 // no I/O, no globals, pure functions only. The browser and Node must build
 // deep-equal views from the same ReportData (test/browser-render.test.ts).
 //
+// Fast at 200k Samples (E3), without changing an answer: the drill-down
+// contents (a Route's Tests and histograms, an Engine's Navigations) and the
+// timeline's point objects are computed when first READ (lazyField: an
+// enumerable, memoizing getter — the view still deep-equals and serializes
+// to the eager one); a timeline series is built as typed columns
+// (seriesColumns); and a few WeakMap caches of DERIVED data (a Sample's point
+// meta, its Route, its Test key; the timeline tallies the exclude-failed
+// variant filters instead of re-walking every Sample) make the second variant
+// cheap. Memoization only: every function still returns the same value for
+// the same input (test/timeline-canvas.test.ts pins the equivalences).
+//
 // The rendering layer (src/browser/views.ts) consumes this and decides
 // NOTHING: threshold dots (p75 only — the dot is a field that exists once per
 // cell, structurally), the Route → Test → Engine → Navigation drill-down
@@ -24,7 +35,7 @@ import {
   excludeFailedExecutions,
   NOT_CARRIED,
   percentile,
-  routeOf,
+  routeOfSample,
   testKeyResolver,
   summarizeOutcomes,
   type MetricAggregate,
@@ -171,6 +182,10 @@ export interface TimelineAxis {
   /** The union of all series' ts ranges — absolute epoch ms. */
   minTs: number;
   maxTs: number;
+  /** The tick step, ms (TICK_STEPS). The renderer re-labels the ticks in the
+   *  viewer's time zone (E3) at the same resolution: day-scale steps carry the
+   *  date, finer ones read HH:MM:SS. */
+  stepMs: number;
   ticks: TimelineTick[];
 }
 
@@ -224,9 +239,9 @@ export function timelineAxis(series: TimelineSeries[]): TimelineAxis | null {
   let minTs = Infinity;
   let maxTs = -Infinity;
   for (const s of series) {
-    for (const p of s.points) {
-      if (p.ts < minTs) minTs = p.ts;
-      if (p.ts > maxTs) maxTs = p.ts;
+    for (const ts of seriesColumns(s).ts) {
+      if (ts < minTs) minTs = ts;
+      if (ts > maxTs) maxTs = ts;
     }
   }
   if (minTs === Infinity) return null;
@@ -234,7 +249,7 @@ export function timelineAxis(series: TimelineSeries[]): TimelineAxis | null {
   const span = maxTs - minTs;
   if (span === 0) {
     // A single instant: one tick, labelled at second resolution.
-    return { minTs, maxTs, ticks: [{ ts: minTs, label: tickLabel(minTs, 1_000) }] };
+    return { minTs, maxTs, stepMs: 1_000, ticks: [{ ts: minTs, label: tickLabel(minTs, 1_000) }] };
   }
 
   // The smallest step yielding at most ~6 intervals; day steps repeat past it.
@@ -251,7 +266,7 @@ export function timelineAxis(series: TimelineSeries[]): TimelineAxis | null {
   }
   // A sub-step span may straddle no boundary at all — still state the time once.
   if (ticks.length === 0) ticks.push({ ts: minTs, label: tickLabel(minTs, step) });
-  return { minTs, maxTs, ticks };
+  return { minTs, maxTs, stepMs: step, ticks };
 }
 
 /** Map an absolute ts into the axis domain as a 0..1 fraction. Pure linear —
@@ -278,63 +293,193 @@ function niceCeil(v: number): number {
   return 10 * base;
 }
 
-function buildTimelineChart(metric: string, samples: AttributedSample[]): TimelineChart {
-  const points: TimelinePoint[] = [];
-  const breakdown: Record<string, number> = {};
-  for (const s of samples) {
-    const m = s.sample.vitals[metric];
-    if (m === undefined) {
-      breakdown[NOT_CARRIED] = (breakdown[NOT_CARRIED] ?? 0) + 1;
-      continue;
-    }
-    if (m.status === 'ok' && typeof m.value === 'number') {
-      // ts stays absolute epoch ms — the axis is wall-clock, never run-relative.
-      points.push({
-        ts: s.sample.ts,
-        value: m.value,
-        meta: {
-          sessionId: s.sessionId,
-          engineLabel: s.engineLabel,
-          coldStart: s.coldStart ?? null,
-          url: s.sample.url,
-        },
-      });
-    } else {
-      // Non-ok is ABSENT from the plot — never a 0 — but counted for coverage.
-      const raw: unknown = m.status;
-      const status = typeof raw === 'string' && raw !== '' ? raw : 'invalid';
-      breakdown[status] = (breakdown[status] ?? 0) + 1;
+/** One Sample's point meta — the same object wherever the Sample is plotted
+ *  (every chart, both variants). Equal by value either way; nothing mutates it. */
+const pointMetaCache = new WeakMap<AttributedSample, TimelinePointMeta>();
+function pointMeta(s: AttributedSample): TimelinePointMeta {
+  let meta = pointMetaCache.get(s);
+  if (meta === undefined) {
+    meta = {
+      sessionId: s.sessionId,
+      engineLabel: s.engineLabel,
+      coldStart: s.coldStart ?? null,
+      url: s.sample.url,
+    };
+    pointMetaCache.set(s, meta);
+  }
+  return meta;
+}
+
+/**
+ * A series' points as columns (E3) — what the canvas renderer and the hover
+ * hit-test read: ts and value as typed arrays, in the series' (ts) order, and
+ * per point its Engine, its Cold Start flag and its full meta, on demand.
+ * At 200k Samples × 5 metrics the points as objects are a million
+ * allocations; a vitals series is built AS columns, and its `points` array is
+ * materialized only when something reads it (a test, the drift guard).
+ */
+export interface SeriesColumns {
+  ts: Float64Array;
+  value: Float64Array;
+  sessionId(i: number): string | undefined;
+  coldStart(i: number): boolean | null | undefined;
+  meta(i: number): TimelinePointMeta | undefined;
+}
+
+const columnsCache = new WeakMap<TimelineSeries, SeriesColumns>();
+
+/** The columns of any series: a vitals series carries them from construction;
+ *  any other (a foreign series appended later) gets them from its points. */
+export function seriesColumns(series: TimelineSeries): SeriesColumns {
+  let cols = columnsCache.get(series);
+  if (cols === undefined) {
+    const points = series.points;
+    const ts = new Float64Array(points.length);
+    const value = new Float64Array(points.length);
+    points.forEach((p, i) => {
+      ts[i] = p.ts;
+      value[i] = p.value;
+    });
+    cols = {
+      ts,
+      value,
+      sessionId: (i) => points[i]?.meta?.sessionId,
+      coldStart: (i) => points[i]?.meta?.coldStart,
+      meta: (i) => points[i]?.meta,
+    };
+    columnsCache.set(series, cols);
+  }
+  return cols;
+}
+
+/** One chart's running tally while buildTimeline walks the pool. */
+interface ChartTally {
+  metric: string;
+  src: AttributedSample[];
+  /** Each point's position in the pool's ts order (byTs). */
+  pos: Int32Array;
+  ts: Float64Array;
+  value: Float64Array;
+  n: number;
+  /** Samples carrying the metric at all, ok or not. */
+  carried: number;
+  coldStartCount: number;
+  breakdown: Record<string, number>;
+}
+
+/** Walk the pool ONCE for every chart: each Sample's vitals are read once,
+ *  not once per metric. `byTs` is the pool stably sorted ascending by ts, so
+ *  each chart's points come out in ts order, ties in pool order — exactly as
+ *  filtering, then stably sorting, would give. */
+function tallyCharts(metricNames: string[], byTs: AttributedSample[]): ChartTally[] {
+  const tallies = metricNames.map(
+    (metric): ChartTally => ({
+      metric,
+      src: [],
+      pos: new Int32Array(byTs.length),
+      ts: new Float64Array(byTs.length),
+      value: new Float64Array(byTs.length),
+      n: 0,
+      carried: 0,
+      coldStartCount: 0,
+      breakdown: {},
+    }),
+  );
+  const byName = new Map(tallies.map((t) => [t.metric, t]));
+  // The k-th name of a record is checked against the k-th name of the last
+  // one first (records nearly always list their metrics in the same order).
+  const lastNames: string[] = [];
+  const lastTallies: Array<ChartTally | undefined> = [];
+  for (let at = 0; at < byTs.length; at++) {
+    const s = byTs[at]!;
+    const vitals = s.sample.vitals;
+    let k = 0;
+    for (const name in vitals) {
+      let t: ChartTally | undefined;
+      if (lastNames[k] === name) t = lastTallies[k];
+      else {
+        t = byName.get(name);
+        lastNames[k] = name;
+        lastTallies[k] = t;
+      }
+      k += 1;
+      if (t === undefined) continue;
+      const m = vitals[name];
+      if (m === undefined) continue; // present but undefined: not carried
+      t.carried += 1;
+      if (m.status === 'ok' && typeof m.value === 'number') {
+        // ts stays absolute epoch ms — the axis is wall-clock, never run-relative.
+        t.pos[t.n] = at;
+        t.ts[t.n] = s.sample.ts;
+        t.value[t.n] = m.value;
+        t.src.push(s);
+        if (s.coldStart === true) t.coldStartCount += 1;
+        t.n += 1;
+      } else {
+        // Non-ok is ABSENT from the plot — never a 0 — but counted for coverage.
+        const raw: unknown = m.status;
+        const status = typeof raw === 'string' && raw !== '' ? raw : 'invalid';
+        t.breakdown[status] = (t.breakdown[status] ?? 0) + 1;
+      }
     }
   }
-  points.sort((a, b) => a.ts - b.ts);
+  for (const t of tallies) {
+    const notCarried = byTs.length - t.carried;
+    if (notCarried > 0) t.breakdown[NOT_CARRIED] = notCarried;
+  }
+  return tallies;
+}
 
-  const values = points.map((p) => p.value);
-  const p75 = values.length > 0 ? percentile(values, 0.75) : null;
-  const dataMax = maxOf(values, p75 ?? 0);
+function buildTimelineChart(tally: ChartTally, total: number): TimelineChart {
+  const { metric, src, n, coldStartCount, breakdown } = tally;
+  const ts = tally.ts.subarray(0, n);
+  const value = tally.value.subarray(0, n);
+
+  const p75 = n > 0 ? percentile(value, 0.75) : null;
+  let dataMax = p75 ?? 0;
+  for (let i = 0; i < n; i++) dataMax = Math.max(dataMax, value[i]!);
   // Headroom above the tallest of {points, p75 line}; 1 is an honest floor for
   // an all-zero series (the real CLS case) — points sit on the baseline.
   const yMax = dataMax > 0 ? niceCeil(dataMax * 1.05) : 1;
 
+  const series: TimelineSeries = {
+    id: `vitals-${metric}`,
+    kind: 'vitals-metric',
+    label: metric,
+    unit: metricUnit(metric),
+    points: [],
+  };
+  lazyField(series, 'points', () => {
+    const points: TimelinePoint[] = new Array(n);
+    for (let i = 0; i < n; i++) points[i] = { ts: ts[i]!, value: value[i]!, meta: pointMeta(src[i]!) };
+    return points;
+  });
+  columnsCache.set(series, {
+    ts,
+    value,
+    sessionId: (i) => src[i]?.sessionId,
+    coldStart: (i) => {
+      const s = src[i];
+      return s === undefined ? undefined : (s.coldStart ?? null);
+    },
+    meta: (i) => {
+      const s = src[i];
+      return s === undefined ? undefined : pointMeta(s);
+    },
+  });
+
   const chart: TimelineChart = {
     metric,
     unit: metricUnit(metric),
-    series: [
-      {
-        id: `vitals-${metric}`,
-        kind: 'vitals-metric',
-        label: metric,
-        unit: metricUnit(metric),
-        points,
-      },
-    ],
-    okCount: points.length,
-    total: samples.length,
+    series: [series],
+    okCount: n,
+    total,
     p75,
-    coldStartCount: points.filter((p) => p.meta?.coldStart === true).length,
+    coldStartCount,
     yMax,
     yTicks: [0, yMax / 2, yMax],
   };
-  if (points.length === 0 && samples.length > 0) {
+  if (n === 0 && total > 0) {
     // The dominant not-ok status, same tie-break as the aggregate's reason.
     chart.reason = Object.entries(breakdown).sort(
       (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
@@ -351,8 +496,86 @@ function buildTimelineChart(metric: string, samples: AttributedSample[]): Timeli
  */
 export function buildTimeline(samples: AttributedSample[], metricNames: string[]): TimelineView {
   if (samples.length === 0) return { axis: null, charts: [] };
-  const charts = metricNames.map((metric) => buildTimelineChart(metric, samples));
+  // One stable sort by ts, shared by every chart: positions into `samples`,
+  // ties in pool order (Array.prototype.sort is stable).
+  const order = Int32Array.from(
+    Array.from({ length: samples.length }, (_, i) => i).sort((a, b) => samples[a]!.sample.ts - samples[b]!.sample.ts),
+  );
+  const byTs = Array.from(order, (i) => samples[i]!);
+  const tallies = tallyCharts(metricNames, byTs);
+  timelineTallies.set(samples, { order, byTs, tallies });
+  return timelineFrom(tallies, byTs.length);
+}
+
+function timelineFrom(tallies: ChartTally[], total: number): TimelineView {
+  const charts = tallies.map((t) => buildTimelineChart(t, total));
   return { axis: timelineAxis(charts.flatMap((c) => c.series)), charts };
+}
+
+/** The tallies behind each Sample set's timeline, so a SUBSET's timeline (the
+ *  exclude-failed variant) is derived by filtering them instead of walking
+ *  every Sample's vitals again. A cache of derived data: the result is the
+ *  same either way (test/timeline-canvas.test.ts pins it). */
+const timelineTallies = new WeakMap<
+  AttributedSample[],
+  { order: Int32Array; byTs: AttributedSample[]; tallies: ChartTally[] }
+>();
+
+/** buildTimeline(kept, metricNames), where `kept` is an order-preserving
+ *  subset of `full`, from full's tallies when they exist. Filtering the full
+ *  pool's stable ts order gives exactly the subset's stable ts order. A chart
+ *  left with no ok point is re-tallied over the subset for its reason (its
+ *  not-ok breakdown is not carried by the full tally's points). */
+function subsetTimeline(full: AttributedSample[], kept: AttributedSample[], metricNames: string[]): TimelineView {
+  const parent = timelineTallies.get(full);
+  if (parent === undefined || kept.length === 0) return buildTimeline(kept, metricNames);
+  // Where each of full's Samples sits in `kept` (-1: dropped) — `kept` is a
+  // subsequence of `full`, so one lockstep walk, no hashing.
+  const inKept = new Int32Array(full.length);
+  for (let i = 0, j = 0; i < full.length; i++) {
+    if (j < kept.length && full[i] === kept[j]) inKept[i] = j++;
+    else inKept[i] = -1;
+  }
+  // Which of full's ts-ordered positions survive, and where to.
+  const moved = new Int32Array(parent.order.length);
+  const order: number[] = [];
+  for (let i = 0; i < parent.order.length; i++) {
+    const k = inKept[parent.order[i]!]!;
+    moved[i] = k === -1 ? -1 : order.length;
+    if (k !== -1) order.push(k);
+  }
+  const keptOrder = Int32Array.from(order);
+  const byTs = Array.from(keptOrder, (k) => kept[k]!);
+  const byName = new Map(parent.tallies.map((t) => [t.metric, t]));
+  const tallies = metricNames.map((metric): ChartTally => {
+    const from = byName.get(metric);
+    if (from === undefined) return tallyCharts([metric], byTs)[0]!;
+    const t: ChartTally = {
+      metric,
+      src: [],
+      pos: new Int32Array(from.n),
+      ts: new Float64Array(from.n),
+      value: new Float64Array(from.n),
+      n: 0,
+      carried: 0,
+      coldStartCount: 0,
+      breakdown: {},
+    };
+    for (let i = 0; i < from.n; i++) {
+      const to = moved[from.pos[i]!]!;
+      if (to === -1) continue;
+      const sample = from.src[i]!;
+      t.pos[t.n] = to;
+      t.ts[t.n] = from.ts[i]!;
+      t.value[t.n] = from.value[i]!;
+      t.src.push(sample);
+      if (sample.coldStart === true) t.coldStartCount += 1;
+      t.n += 1;
+    }
+    return t.n === 0 ? tallyCharts([metric], byTs)[0]! : t;
+  });
+  timelineTallies.set(kept, { order: keptOrder, byTs, tallies });
+  return timelineFrom(tallies, byTs.length);
 }
 
 export interface ReportView {
@@ -386,10 +609,17 @@ export type TestKeyOf = (s: AttributedSample) => string;
  *  must not change key when that Execution is excluded. */
 export function testKeyFor(samples: AttributedSample[]): TestKeyOf {
   const resolve = testKeyResolver(samples, (s) => s.sample.test);
+  // Memoized per test identity record: both variants key the same Samples.
+  const keys = new WeakMap<object, string>();
   return (s) => {
     const t = s.sample.test;
     if (t === null || t === undefined) return LEGACY_KEY;
-    return resolve(t);
+    let key = keys.get(t);
+    if (key === undefined) {
+      key = resolve(t);
+      keys.set(t, key);
+    }
+    return key;
   };
 }
 
@@ -518,23 +748,27 @@ function buildEngines(
         total: samples.length,
       };
     }
-    const navigations: NavigationView[] = samples
-      .map((s) => ({
-        ts: s.sample.ts,
-        url: s.sample.url,
-        navigationIndex: s.sample.navigationIndex ?? null,
-        coldStart: s.coldStart ?? null,
-        executionStatus: s.executionStatus ?? ('unavailable' as const),
-        vitals: s.sample.vitals,
-      }))
-      .sort((a, b) => a.ts - b.ts || (a.navigationIndex ?? 0) - (b.navigationIndex ?? 0));
-    engines.push({
+    const engine: EngineView = {
       sessionId,
       engineLabel: samples[0]!.engineLabel,
       sampleCount: samples.length,
       p75s,
-      navigations,
-    });
+      navigations: [],
+    };
+    // The Navigation rows: built when first read (E3), like a Route's drill-down.
+    lazyField(engine, 'navigations', () =>
+      samples
+        .map((s) => ({
+          ts: s.sample.ts,
+          url: s.sample.url,
+          navigationIndex: s.sample.navigationIndex ?? null,
+          coldStart: s.coldStart ?? null,
+          executionStatus: s.executionStatus ?? ('unavailable' as const),
+          vitals: s.sample.vitals,
+        }))
+        .sort((a, b) => a.ts - b.ts || (a.navigationIndex ?? 0) - (b.navigationIndex ?? 0)),
+    );
+    engines.push(engine);
   }
   // The API's session order, so labels' ordinals read in sequence.
   engines.sort(
@@ -545,12 +779,9 @@ function buildEngines(
   return engines;
 }
 
-function buildTestGroups(
-  pool: AttributedSample[],
-  metricNames: string[],
-  sessionOrder: Map<string, number>,
-  testKey: TestKeyOf,
-): TestGroupView[] {
+/** A Route pool grouped by Test key, in first-seen order. Cheap: one key per
+ *  Sample. Its size is the Route's testCount; buildTestGroups builds from it. */
+function groupByTest(pool: AttributedSample[], testKey: TestKeyOf): Map<string, AttributedSample[]> {
   const byTest = new Map<string, AttributedSample[]>();
   for (const s of pool) {
     const key = testKey(s);
@@ -558,6 +789,14 @@ function buildTestGroups(
     if (group) group.push(s);
     else byTest.set(key, [s]);
   }
+  return byTest;
+}
+
+function buildTestGroups(
+  byTest: Map<string, AttributedSample[]>,
+  metricNames: string[],
+  sessionOrder: Map<string, number>,
+): TestGroupView[] {
   const groups: TestGroupView[] = [];
   for (const [key, samples] of byTest) {
     const legacy = key === LEGACY_KEY;
@@ -610,17 +849,62 @@ export function buildRouteSummary(data: ReportData): RouteSummaryView {
   };
 }
 
+/** Replace `obj[key]` (already present, so its position in key order is
+ *  kept) with an enumerable getter that computes the value on first read and
+ *  then becomes a plain data property holding it. */
+function lazyField<T extends object, K extends keyof T>(obj: T, key: K, compute: () => T[K]): void {
+  const settle = (target: T, value: T[K]): void => {
+    Object.defineProperty(target, key, { configurable: true, enumerable: true, writable: true, value });
+  };
+  Object.defineProperty(obj, key, {
+    configurable: true,
+    enumerable: true,
+    get(this: T) {
+      const value = compute();
+      settle(this, value);
+      return value;
+    },
+    set(this: T, value: T[K]) {
+      settle(this, value);
+    },
+  });
+}
+
+function buildHistograms(pool: AttributedSample[], metricNames: string[]): HistogramView[] {
+  const histograms: HistogramView[] = [];
+  for (const name of metricNames) {
+    const values = okValues(pool, name);
+    if (values.length === 0) continue; // nothing measured → no histogram, not an empty one
+    const bins = histogramBins(values);
+    histograms.push({
+      metric: name,
+      okCount: values.length,
+      min: minOf(values),
+      max: maxOf(values),
+      maxBinCount: maxOf(bins.map((b) => b.count)),
+      bins,
+    });
+  }
+  return histograms;
+}
+
 /** Build the whole precomputed view from a ReportData. Pure.
  *  `testKey` defaults to a key function over `data.samples`; a variant over a
  *  subset passes the full Report's (testKeyFor) so group keys stay stable. */
 export function buildView(data: ReportData, testKey: TestKeyOf = testKeyFor(data.samples)): ReportView {
+  return viewOf(data, testKey, null);
+}
+
+/** buildView; `subsetOf`, when given, is the full Sample set data.samples was
+ *  filtered from (in order), whose timeline tallies can be reused. */
+function viewOf(data: ReportData, testKey: TestKeyOf, subsetOf: AttributedSample[] | null): ReportView {
   const metricNames = metricNamesOf(data.routes);
   const sessionOrder = new Map<string, number>(data.sessions.map((s, i) => [s.sessionId, i]));
 
   // The Route pools, matching aggregateRoutes' grouping exactly.
   const pools = new Map<string, AttributedSample[]>();
   for (const s of data.samples) {
-    const route = routeOf(s.sample);
+    const route = routeOfSample(s);
     const pool = pools.get(route);
     if (pool) pool.push(s);
     else pools.set(route, [s]);
@@ -628,31 +912,24 @@ export function buildView(data: ReportData, testKey: TestKeyOf = testKeyFor(data
 
   const routes: RouteView[] = data.routes.map((row) => {
     const pool = pools.get(row.route) ?? [];
-    const tests = buildTestGroups(pool, metricNames, sessionOrder, testKey);
-    const histograms: HistogramView[] = [];
-    for (const name of metricNames) {
-      const values = okValues(pool, name);
-      if (values.length === 0) continue; // nothing measured → no histogram, not an empty one
-      const bins = histogramBins(values);
-      histograms.push({
-        metric: name,
-        okCount: values.length,
-        min: minOf(values),
-        max: maxOf(values),
-        maxBinCount: maxOf(bins.map((b) => b.count)),
-        bins,
-      });
-    }
-    return {
+    const byTest = groupByTest(pool, testKey);
+    const route: RouteView = {
       route: row.route,
       sampleCount: row.sampleCount,
       coldStarts: row.coldStarts,
-      blended: tests.length > 1,
-      testCount: tests.length,
+      blended: byTest.size > 1,
+      testCount: byTest.size,
       cells: metricNames.map((name) => buildCell(name, row)),
-      histograms,
-      tests,
+      histograms: [],
+      tests: [],
     };
+    // The drill-down's contents (E3) are built when first READ — the browser
+    // reads them when the Route's drill-down is first expanded. Lazy, not
+    // different: an enumerable getter that memoizes, so the view still
+    // deep-equals (and JSON-serializes to) the eager one.
+    lazyField(route, 'histograms', () => buildHistograms(pool, metricNames));
+    lazyField(route, 'tests', () => buildTestGroups(byTest, metricNames, sessionOrder));
+    return route;
   });
 
   return {
@@ -665,7 +942,10 @@ export function buildView(data: ReportData, testKey: TestKeyOf = testKeyFor(data
     enginesWithArtifact: data.sessions.filter((s) => s.artifact === 'present').length,
     totalSamples: data.samples.length,
     routes,
-    timeline: buildTimeline(data.samples, metricNames),
+    timeline:
+      subsetOf === null
+        ? buildTimeline(data.samples, metricNames)
+        : subsetTimeline(subsetOf, data.samples, metricNames),
   };
 }
 
@@ -704,7 +984,7 @@ export function buildExcludedView(
 ): ReportView | null {
   if (!hasExcludedVariant(outcomes)) return null;
   const kept = excludeFailedExecutions(data.samples);
-  return buildView(
+  return viewOf(
     {
       ...data,
       samples: kept,
@@ -713,6 +993,7 @@ export function buildExcludedView(
       routes: aggregateRoutes(kept, { coldStartsPreMarked: true }),
     },
     testKey,
+    data.samples,
   );
 }
 
