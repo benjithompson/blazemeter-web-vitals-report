@@ -7,7 +7,8 @@
 // where they are unit-testable. Rendering geometry is deliberately not tested;
 // it is looked at.
 //
-// Vocabulary (CONTEXT.md): Test identity is (file, title, project); legacy
+// Vocabulary (CONTEXT.md): Test identity is `test.id` when the record carries
+// one, else (file, title, project); legacy
 // Samples carry none and group as one explicit legacy Test group. Engines are
 // keyed by sessionId — the label rides along for humans and is never a key.
 
@@ -18,6 +19,7 @@ import {
   NOT_CARRIED,
   percentile,
   routeOf,
+  testKeyResolver,
   summarizeOutcomes,
   type MetricAggregate,
   type OutcomeSummary,
@@ -72,9 +74,10 @@ export interface EngineView {
 }
 
 export interface TestGroupView {
-  /** Stable grouping key (identity triple, or the legacy marker). */
+  /** Stable grouping key (test.id, else the identity triple, or the legacy marker). */
   key: string;
-  /** Human label: "title — file (project)", or the legacy group label. */
+  /** Human label: "titlePath › … — path (project)", falling back to
+   *  "title — file (project)"; or the legacy group label. */
   label: string;
   legacy: boolean;
   sampleCount: number;
@@ -364,10 +367,41 @@ export interface ReportView {
 
 const LEGACY_KEY = '\u0000legacy';
 
-function testKey(s: AttributedSample): string {
-  const t = s.sample.test;
-  if (t === null || t === undefined) return LEGACY_KEY;
-  return [t.file, t.title, t.project].join('\u0000');
+/** A Report-wide Test key function (D6): `test.id` when the Sample carries
+ *  one, else the (file, title, project) triple — with an id-less Sample folded
+ *  into the one id its triple carries elsewhere in the Report, so an old and a
+ *  new collector's Samples of the same Test stay one Test (testKeyResolver). */
+type TestKeyOf = (s: AttributedSample) => string;
+
+function testKeyFor(samples: AttributedSample[]): TestKeyOf {
+  const resolve = testKeyResolver(samples, (s) => s.sample.test);
+  return (s) => {
+    const t = s.sample.test;
+    if (t === null || t === undefined) return LEGACY_KEY;
+    return resolve(t);
+  };
+}
+
+/** The human Test label, composed of data, not vocabulary: "title — file
+ *  (project)", with the describe chain (`titlePath`, joined by " › ") in place
+ *  of the bare title and the testDir-relative `path` in place of the basename
+ *  whenever the group carries them — which is what tells two same-title Tests
+ *  apart. Read from the first Sample in the group that carries each field. */
+function testLabel(samples: AttributedSample[]): string {
+  let t: NonNullable<AttributedSample['sample']['test']> | null = null;
+  let titlePath: string[] | undefined;
+  let specPath: string | undefined;
+  for (const s of samples) {
+    const st = s.sample.test;
+    if (!st) continue;
+    t ??= st;
+    if (titlePath === undefined && st.titlePath && st.titlePath.length > 0) titlePath = st.titlePath;
+    if (specPath === undefined && st.path) specPath = st.path;
+    if (titlePath !== undefined && specPath !== undefined) break;
+  }
+  if (t === null) return LEGACY_KEY;
+  const title = titlePath ? titlePath.join(' \u203a ') : t.title;
+  return `${title} — ${specPath ?? t.file} (${t.project})`;
 }
 
 /** Math.min over an array of ANY length. `Math.min(...xs)` puts every
@@ -504,6 +538,7 @@ function buildTestGroups(
   pool: AttributedSample[],
   metricNames: string[],
   sessionOrder: Map<string, number>,
+  testKey: TestKeyOf,
 ): TestGroupView[] {
   const byTest = new Map<string, AttributedSample[]>();
   for (const s of pool) {
@@ -515,12 +550,11 @@ function buildTestGroups(
   const groups: TestGroupView[] = [];
   for (const [key, samples] of byTest) {
     const legacy = key === LEGACY_KEY;
-    const t = samples[0]!.sample.test;
     groups.push({
       key,
       // The label is composed of data (file/title/project), not vocabulary —
       // the legacy marker is the one UI string here (render substitutes it).
-      label: legacy || t === null ? LEGACY_KEY : `${t.title} — ${t.file} (${t.project})`,
+      label: legacy ? LEGACY_KEY : testLabel(samples),
       legacy,
       sampleCount: samples.length,
       engines: buildEngines(samples, metricNames, sessionOrder),
@@ -542,6 +576,7 @@ export function buildView(data: ReportData): ReportView {
   ];
 
   const sessionOrder = new Map<string, number>(data.sessions.map((s, i) => [s.sessionId, i]));
+  const testKey = testKeyFor(data.samples);
 
   // The Route pools, matching aggregateRoutes' grouping exactly.
   const pools = new Map<string, AttributedSample[]>();
@@ -554,7 +589,7 @@ export function buildView(data: ReportData): ReportView {
 
   const routes: RouteView[] = data.routes.map((row) => {
     const pool = pools.get(row.route) ?? [];
-    const tests = buildTestGroups(pool, metricNames, sessionOrder);
+    const tests = buildTestGroups(pool, metricNames, sessionOrder, testKey);
     const histograms: HistogramView[] = [];
     for (const name of metricNames) {
       const values = okValues(pool, name);
