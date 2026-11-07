@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SAMPLE_ATTACHMENT_PREFIX } from 'bzm-vitals-format';
 import { buildStandalone } from '../scripts/build-standalone';
-import { runCli } from '../src/cli.js';
+import { DASHBOARD_VERSION, runCli } from '../src/cli.js';
 import { jsonResponse, bytesResponse, recordingTransport } from './helpers/transport.js';
 import { makeZip } from './helpers/zip.js';
 import { parseBlob } from './helpers/blob.js';
@@ -186,6 +186,16 @@ describe('the standalone file behaves as the package does', () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('usage: bzm-vitals-dashboard');
   }, 60_000);
+
+  // D2 (#31): the version is inlined — no package.json sits beside a download.
+  it('--version prints the inlined package version, and --help the usage', async () => {
+    const version = await execFileP(process.execPath, [TSX_CLI, standalonePath, '--version'], {
+      cwd: workDir,
+    });
+    expect(version.stdout).toBe(`${DASHBOARD_VERSION}\n`);
+    const help = await execFileP(process.execPath, [TSX_CLI, standalonePath, '--help'], { cwd: workDir });
+    expect(help.stdout).toContain('usage: bzm-vitals-dashboard --master <masterId>');
+  }, 60_000);
 });
 
 // The .mjs is the portable variant: plain node, no tsx, no type stripping. The
@@ -210,6 +220,23 @@ describe('the plain-JavaScript .mjs runs on bare node', () => {
     const data = parseBlob(await readFile(path.join(workDir, 'report-mjs.html'), 'utf8'));
     const reference = parseBlob(referenceHtml);
     expect({ ...data, generatedAt: null }).toEqual({ ...reference, generatedAt: null });
+  }, 60_000);
+
+  it('--version, --help and a malformed command line behave as the package does', async () => {
+    const version = await execFileP(process.execPath, [mjsPath, '--version'], { cwd: workDir });
+    expect(version.stdout).toBe(`${DASHBOARD_VERSION}\n`);
+    const help = await execFileP(process.execPath, [mjsPath, '-h'], { cwd: workDir });
+    expect(help.stdout).toContain('BLAZEMETER_API_KEY_SECRET');
+    const bad = await execFileP(process.execPath, [mjsPath, '--out', 'r.html', '--master'], {
+      cwd: workDir,
+    }).then(
+      () => {
+        throw new Error('expected a non-zero exit');
+      },
+      (err: { code?: number; stderr?: string }) => err,
+    );
+    expect(bad.code).toBe(2);
+    expect(bad.stderr).toContain("option '--master' needs a value");
   }, 60_000);
 
   it('with --artifacts it reads a downloaded zip, with no credentials in the env', async () => {
