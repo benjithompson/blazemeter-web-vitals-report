@@ -41,6 +41,13 @@ Every Engine in a Report runs the **identical** set of `repeat` indices — Exec
 ### Navigation
 One page load within an Execution, ordered by **`navigationIndex`**. The occasion on which vitals are measured.
 
+`navigationIndex` counts across **every** browser tab the Execution opened, so it stays unique per Execution. Within one tab it follows time order. Across tabs, `ts` is the time order.
+
+### pageIndex
+*Which browser tab of the Execution* a Navigation happened in: `0` is the first one opened in the test's context, and each tab opened after it (a popup, a `context.newPage()`) takes the next number, in the order it opened. Optional: Samples written before it existed lack it.
+
+It discriminates Samples within one Execution and is **never an aggregation dimension**: a Route is the same thing whichever tab loaded it. It does not change Cold Starts (still the first Navigation by `ts` per Worker), and it is not part of a Sample's identity, because `navigationIndex` already is unique per Execution. "Page" here means the browser tab (Playwright's `Page`), never a URL or a Route (see ~~Page~~ below).
+
 ### Sample
 The vitals captured at one Navigation. **The atom of this domain** — everything aggregates from Samples, nothing is stored pre-aggregated.
 

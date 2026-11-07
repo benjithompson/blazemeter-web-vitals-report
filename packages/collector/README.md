@@ -49,7 +49,29 @@ test('order', async ({ page, vitals }) => {
 
 Skip it and the dashboard derives a Route from the URL path automatically. A
 declared Route always wins over a derived one. `route()` tags the Navigation
-the page is currently on — call it while you're still on that page.
+the page is currently on — call it while you're still on that page. With
+several pages open (a popup, a second `context.newPage()`), `route()` is not
+tied to one page: it tags whichever page's Navigation is recorded next.
+
+## Which pages are measured
+
+Every page your test opens in the **test's own context** — the `context`
+fixture Playwright gives each test:
+
+- the `page` fixture (the context's first page);
+- popups, e.g. from `page.waitForEvent('popup')` after clicking a
+  `target="_blank"` link or calling `window.open()`;
+- pages from `context.newPage()`, including in a test that never uses `page`.
+
+Each Sample records which page it came from as `pageIndex`: `0` is the
+context's first page, and each further page gets the next number in the order
+it opened. A page or context you close yourself (`popup.close()`,
+`context.close()`) still records its last Navigation first.
+
+**Not measured:** a context you create yourself with `browser.newContext()`
+(or a page from `browser.newPage()`). It is outside the fixture, so its pages
+write no Samples. Use the `context` fixture's pages for anything you want
+measured.
 
 ## What each status means
 
@@ -92,6 +114,12 @@ Likewise, non-Chromium projects still emit Samples: CLS arrives as
 
   `file`, `title` and `project` are written exactly as 0.2.x wrote them;
   records from 0.2.x lack `id`, `titlePath` and `path`.
+  Each Sample also carries `navigationIndex` (1, 2, 3… within the test
+  execution, across all its pages, so it is unique per execution) and
+  `pageIndex` (which page of the context, see
+  [Which pages are measured](#which-pages-are-measured)); 0.2.x records lack
+  `pageIndex`. Within one page `navigationIndex` follows time order; across
+  pages, order by the Sample's `ts`.
   Each Sample also carries a `context` block:
 
   | field | what it counts |
