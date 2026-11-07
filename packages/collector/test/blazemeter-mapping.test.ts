@@ -12,8 +12,9 @@ import {
   readDiscreteCredentials,
   type MappingContext,
 } from '../src/blazemeter-destination';
-// Route derivation + identity/kill-switch readers moved to the shared cross-sink module.
-import { routeOf, resolveLocation, resolveEngine, isPushKilled, isPerEngine } from '../src/shared';
+// Identity/kill-switch readers live in the shared cross-sink module; routeOf in format.
+import { resolveLocation, resolveEngine, isPushKilled, isPerEngine } from '../src/shared';
+import { routeOf } from 'bzm-vitals-format';
 
 const CTX: MappingContext = {
   masterId: 82_731_957,

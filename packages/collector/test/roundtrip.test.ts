@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import { firefoxRunOrSkip, itFirefox } from './helpers/browsers';
 import { runPlaywright, walkFiles } from './helpers/run-playwright';
+import { EXECUTION_STATUSES } from 'bzm-vitals-format';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..', '..');
@@ -298,7 +299,7 @@ describe("the parser's typed view exposes every field format v1 defines", () => 
       expect(typeof o.test.project, r.path).toBe('string');
       expect(typeof o.test.repeat, r.path).toBe('number');
       expect(typeof o.test.worker, r.path).toBe('number');
-      expect(['passed', 'failed', 'timedOut', 'skipped'], r.path).toContain(o.status);
+      expect(EXECUTION_STATUSES, r.path).toContain(o.status);
       expect(typeof o.retry, r.path).toBe('number');
     }
   });

@@ -36,12 +36,12 @@ import {
   SCHEMA_VERSION,
   SAMPLE_ATTACHMENT_PREFIX,
   OUTCOME_ATTACHMENT_PREFIX,
+  isCollectorMetricStatus,
+  isExecutionStatus,
   type Sample,
   type Metric,
-  type MetricStatus,
   type TestIdentity,
   type ExecutionOutcome,
-  type ExecutionStatus,
 } from 'bzm-vitals-format';
 import { Pusher, resolveFlushMs, PUSH_STATUS_ATTACHMENT_PREFIX } from './pusher.js';
 import { createDestinationsFromEnv } from './destinations.js';
@@ -426,21 +426,13 @@ function trapSource(reportBinding: string, flushHook: string): string {
 
 /**
  * Sanitize a raw metric from the page into the record. The collector's vocabulary is
- * the closed set MINUS 'unknown' (the legacy adapter's alone — never written here);
- * anything malformed lands as 'error' rather than inventing a status, and a value
- * survives only when the status says it was measured.
+ * format's COLLECTOR_METRIC_STATUSES — the closed set MINUS 'unknown' (the legacy
+ * adapter's alone — never written here); anything malformed lands as 'error' rather than
+ * inventing a status, and a value survives only when the status says it was measured.
  */
-const COLLECTOR_STATUSES = new Set<MetricStatus>([
-  'ok',
-  'unsupported',
-  'no-interaction',
-  'not-finalized',
-  'error',
-]);
-
 function metric(raw: RawMetric | undefined): Metric {
-  const status = raw?.status as MetricStatus;
-  if (!COLLECTOR_STATUSES.has(status)) return { value: null, status: 'error' };
+  const status = raw?.status;
+  if (!isCollectorMetricStatus(status)) return { value: null, status: 'error' };
   if (status === 'ok') {
     return typeof raw?.value === 'number' && Number.isFinite(raw.value)
       ? { value: raw.value, status: 'ok' }   // CLS is a true float — never round here
@@ -648,16 +640,6 @@ async function flushOnTeardown(page: Page, state: CollectorState): Promise<void>
   await Promise.allSettled(state.pending);
 }
 
-/** The Outcome record's closed status vocabulary. testInfo.status can also be
- *  'interrupted' (ctrl-c) or undefined — Executions that never finished, which leave
- *  NO record by design. */
-const OUTCOME_STATUSES: ReadonlySet<ExecutionStatus> = new Set<ExecutionStatus>([
-  'passed',
-  'failed',
-  'timedOut',
-  'skipped',
-]);
-
 /**
  * Write-then-attach the one Execution Outcome record. Runs in fixture teardown, where
  * testInfo.status IS final: teardown runs after the test body and all afterEach hooks,
@@ -667,11 +649,14 @@ const OUTCOME_STATUSES: ReadonlySet<ExecutionStatus> = new Set<ExecutionStatus>(
  */
 async function writeOutcome(testInfo: TestInfo): Promise<void> {
   const status = testInfo.status;
-  if (status === undefined || !OUTCOME_STATUSES.has(status as ExecutionStatus)) return;
+  // The closed vocabulary is format's EXECUTION_STATUSES. testInfo.status can also be
+  // 'interrupted' (ctrl-c) or undefined — Executions that never finished, which leave
+  // NO record by design.
+  if (!isExecutionStatus(status)) return;
   const outcome: ExecutionOutcome = {
     schemaVersion: SCHEMA_VERSION,
     test: testIdentity(testInfo),
-    status: status as ExecutionStatus,
+    status,
     // A retry is ANOTHER Execution: it re-runs this whole fixture graph and records its
     // own outcome (in a fresh worker, so the (repeat, worker) join stays unambiguous).
     retry: testInfo.retry,

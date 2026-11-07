@@ -1,31 +1,16 @@
-// Cross-sink helpers shared by every Destination — route derivation and the env readers
-// that resolve the location/engine tiers and the global push kill switch. These are
-// sink-AGNOSTIC (they know nothing about BlazeMeter's metricPath or Influx's line
-// protocol), so both destinations resolve identity from ONE source of truth: a location
-// tier, an engine tier, and a route are computed identically no matter where they land.
+// Cross-sink helpers shared by every Destination — the env readers that resolve the
+// location/engine tiers and the global push kill switch. These are sink-AGNOSTIC (they
+// know nothing about BlazeMeter's metricPath or Influx's line protocol), so both
+// destinations resolve identity from ONE source of truth: a location tier and an engine
+// tier are computed identically no matter where they land (and a Route too, via
+// bzm-vitals-format's routeOf).
 //
 // Both sinks (and the mapping unit tests) import these from HERE directly — not re-exported
 // through blazemeter-destination.ts, so the single-file standalone bundle never carries a
 // dangling relative re-export. When the Influx feed is ever extracted to its own package,
 // this module travels with it.
 
-import type { Sample } from 'bzm-vitals-format';
-
 export type Env = Record<string, string | undefined>;
-
-/**
- * Derive the Route for a Sample — the SAME routing the file report uses (dashboard
- * aggregate.ts routeOf): a declared Route wins verbatim; otherwise the URL pathname,
- * with a hand-rolled query/fragment strip for addresses the URL parser rejects.
- */
-export function routeOf(sample: Sample): string {
-  if (sample.route !== undefined) return sample.route;
-  try {
-    return new URL(sample.url).pathname;
-  } catch {
-    return sample.url.split(/[?#]/, 1)[0]!;
-  }
-}
 
 /** The global kill switch: BZM_VITALS_PUSH in {0, off, false} disables ALL pushing. */
 export function isPushKilled(env: Env): boolean {

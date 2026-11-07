@@ -1,0 +1,12 @@
+{
+  "//": "Type-checks the tests (their expectTypeOf assertions) with `tsc -p test`; not part of the build.",
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
+  },
+  "include": ["."]
+}

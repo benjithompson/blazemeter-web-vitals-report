@@ -12,7 +12,7 @@
 // Security, by construction: only NAMED vars are read; process.env is never serialized; the
 // token travels only in the writer's Authorization header (never a Sample, log, or artifact).
 
-import type { Sample, Metric } from 'bzm-vitals-format';
+import { routeOf, type Sample, type Metric } from 'bzm-vitals-format';
 import {
   PushError,
   isRetryableStatus,
@@ -22,7 +22,7 @@ import {
   type Clock,
   type Destination,
 } from './pusher.js';
-import { routeOf, resolveIdentity, type Env } from './shared.js';
+import { resolveIdentity, type Env } from './shared.js';
 import { InfluxWriter, type InfluxConfig, type InfluxFetchLike, type Point } from './influx-writer.js';
 
 // ---------------------------------------------------------------------------

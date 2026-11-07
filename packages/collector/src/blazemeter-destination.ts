@@ -12,7 +12,7 @@
 // never serialized; the key travels only in the Authorization header (never in a Sample,
 // a log line, or any on-disk artifact).
 
-import type { Sample, Metric } from 'bzm-vitals-format';
+import { routeOf, type Sample, type Metric } from 'bzm-vitals-format';
 import {
   PushError,
   isRetryableStatus,
@@ -22,11 +22,11 @@ import {
   type Clock,
   type Destination,
 } from './pusher.js';
-// Route derivation and the identity/kill-switch env readers live in the shared cross-sink
-// module now (both sinks resolve identity from one source). Imported, not re-exported:
-// importers take them from the shared module directly, which keeps the single-file
-// standalone bundle free of a dangling relative re-export that would break at load.
-import { routeOf, resolveIdentity, type Env } from './shared.js';
+// The identity/kill-switch env readers live in the shared cross-sink module (both sinks
+// resolve identity from one source); routeOf comes from bzm-vitals-format. Imported, not
+// re-exported: importers take them from the shared module directly, which keeps the
+// single-file standalone bundle free of a dangling relative re-export that would break at load.
+import { resolveIdentity, type Env } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // 1. PURE mapping — the injection contract, expressed as data transforms.

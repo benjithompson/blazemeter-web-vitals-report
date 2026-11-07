@@ -14,14 +14,15 @@
 //              work. It is an interaction — INP 'ok', never 'no-interaction' (C2).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Metric } from 'bzm-vitals-format';
+import { COLLECTOR_METRIC_STATUSES, type Metric } from 'bzm-vitals-format';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import { runPlaywright, findSamples, type FoundSample } from './helpers/run-playwright';
 import { firefoxRunOrSkip, itFirefox } from './helpers/browsers';
 
 /** The collector's closed vocabulary: format v1's MetricStatus MINUS 'unknown', which
- *  is the legacy adapter's alone. The collector never writes it. */
-const COLLECTOR_VOCAB = new Set(['ok', 'unsupported', 'no-interaction', 'not-finalized', 'error']);
+ *  is the legacy adapter's alone. The collector never writes it. (The literal list is
+ *  pinned by packages/format/test/format.test.ts.) */
+const COLLECTOR_VOCAB: ReadonlySet<string> = new Set(COLLECTOR_METRIC_STATUSES);
 const FIVE_VITALS = ['ttfb', 'fcp', 'lcp', 'cls', 'inp'] as const;
 
 let server: FixtureServer;
