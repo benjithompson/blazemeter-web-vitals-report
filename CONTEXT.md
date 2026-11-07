@@ -74,6 +74,11 @@ A Cold Start is a **real page load**, not an error: a user arriving at a cold CD
 
 Cold Starts are **predictable and countable**: a Report has exactly one per Worker per Engine.
 
+### Push Status
+*What happened to the Samples a Worker pushed live*: one record per Worker, written at Worker teardown (`bzm-vitals-push-status-<worker>`), giving each push destination's count of Samples **sent**, **failed** (rejected, or the destination never came up) and **dropped** (discarded for capacity or time), and its **lastError**.
+
+It describes the live push only, and is **never a Sample**: the on-disk Samples remain the record of truth whether the push succeeded or not. It never carries a credential.
+
 ## The pooling rule
 
 > **Pool Attributed Samples over `sessionId` and `repeat`. Everything else is a dimension you slice by.**

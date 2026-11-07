@@ -81,6 +81,30 @@ listing calls; the artifact download URL is pre-signed and needs none.
 > 🔴 `api-key.json` is gitignored and must stay so — a stray `git add -A` must
 > never commit a live key.
 
+## API host, timeouts and retries
+
+```bash
+export BLAZEMETER_API_BASE=https://a.blazemeter.com   # the default
+```
+
+`BLAZEMETER_API_BASE` points the listing calls at another BlazeMeter API host
+(a private deployment, or a test double). The collector reads the same variable.
+It must be an `http(s)` URL; a trailing `/` is ignored.
+
+Every request has a deadline, so an unresponsive server fails the run instead
+of hanging it:
+
+- An API call gets **30 s**, headers and body together.
+- An artifact download gets **120 s**, and is abandoned sooner if **30 s** pass
+  with no bytes arriving.
+
+A `429`, a `5xx` or a network error is retried up to **3 times**, with
+exponential backoff plus jitter (about 0.5 s, 1 s, 2 s). A `Retry-After` header
+is honoured, up to 60 s. A timeout is final and is not retried, and neither is
+an untrusted TLS certificate (see the root README's proxy section). Error
+messages name the host, and never print the pre-signed download URL's query
+string, which is a live credential until it expires.
+
 ## The cache is gitignored and re-fetchable
 
 `.artifact-cache/` is gitignored. Artifacts are a re-fetchable resource, not a

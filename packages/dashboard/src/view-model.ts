@@ -301,7 +301,7 @@ function buildTimelineChart(metric: string, samples: AttributedSample[]): Timeli
 
   const values = points.map((p) => p.value);
   const p75 = values.length > 0 ? percentile(values, 0.75) : null;
-  const dataMax = Math.max(p75 ?? 0, ...(values.length > 0 ? values : [0]));
+  const dataMax = maxOf(values, p75 ?? 0);
   // Headroom above the tallest of {points, p75 line}; 1 is an honest floor for
   // an all-zero series (the real CLS case) — points sit on the baseline.
   const yMax = dataMax > 0 ? niceCeil(dataMax * 1.05) : 1;
@@ -370,12 +370,31 @@ function testKey(s: AttributedSample): string {
   return [t.file, t.title, t.project].join('\u0000');
 }
 
+/** Math.min over an array of ANY length. `Math.min(...xs)` puts every
+ *  element on the call stack and throws a RangeError at ~10^5 elements
+ *  (issue #33). Folding pairwise through Math.min keeps its exact semantics:
+ *  NaN propagates, -0 < +0, and an empty array gives `init` (default
+ *  +Infinity, as `Math.min()` does). */
+function minOf(values: readonly number[], init = Infinity): number {
+  let m = init;
+  for (const v of values) m = Math.min(m, v);
+  return m;
+}
+
+/** Math.max over an array of ANY length; see minOf. An empty array gives
+ *  `init` (default -Infinity, as `Math.max()` does). */
+function maxOf(values: readonly number[], init = -Infinity): number {
+  let m = init;
+  for (const v of values) m = Math.max(m, v);
+  return m;
+}
+
 /** Equal-width bins over [min, max]; a single-valued distribution (the real
  *  CLS case: 41 of 50 share one value) collapses to one full-count bin. */
 export function histogramBins(values: number[], binCount?: number): HistogramBin[] {
   if (values.length === 0) return [];
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const min = minOf(values);
+  const max = maxOf(values);
   if (min === max) return [{ x0: min, x1: max, count: values.length }];
   const n = binCount ?? Math.min(12, Math.max(5, Math.ceil(Math.sqrt(values.length))));
   const width = (max - min) / n;
@@ -544,9 +563,9 @@ export function buildView(data: ReportData): ReportView {
       histograms.push({
         metric: name,
         okCount: values.length,
-        min: Math.min(...values),
-        max: Math.max(...values),
-        maxBinCount: Math.max(...bins.map((b) => b.count)),
+        min: minOf(values),
+        max: maxOf(values),
+        maxBinCount: maxOf(bins.map((b) => b.count)),
         bins,
       });
     }

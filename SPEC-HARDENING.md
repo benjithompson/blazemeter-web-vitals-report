@@ -366,8 +366,10 @@ Each ticket has: **What to build**, **Owns / Touches**, **Implementation notes**
 - [ ] Output is byte-for-byte identical on the existing known-answer fixtures.
 **Blocked by:** none. **Size:** S
 
-#### D7. Decide and document the percentile method (needs-owner-decision)
-**Decision needed:** keep `sorted[floor((n−1)q)]` (NumPy "lower") or change it.
+#### D7. Decide and document the percentile method
+**Decided 2026-11-07 by the owner: Option 1, keep the current method.** It is documented in the README, in the Route table's note line in the report, and in the `percentile` doc comment. The known answers are unchanged.
+
+**Original question:** keep `sorted[floor((n−1)q)]` (NumPy "lower") or change it.
 - **Option 1 (recommended):** keep it. Name it "lower (NumPy `method='lower'`)" in the README and the report footer, and explain that it always returns an observed value.
 - **Option 2:** nearest-rank (`ceil(q·n)−1`). Every known answer changes.
 - **Option 3:** linear interpolation (NumPy's default). The value may not be an observed one.

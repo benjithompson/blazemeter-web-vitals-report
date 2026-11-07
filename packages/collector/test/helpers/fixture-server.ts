@@ -63,6 +63,16 @@ function page(title: string, body: string): string {
 </html>`;
 }
 
+// The fast-click page (C2): a second button whose click handler does NO work, so the
+// interaction finishes well under event-timing's 16ms durationThreshold and emits no
+// 'event' entry at all. Only the first-input entry records it — the case the trap must
+// still report as an interaction, never as 'no-interaction'.
+const FAST = page('Fast', `<p>fast content</p>
+  <div id="fast">fast click</div>
+  <script>
+    document.getElementById('fast').addEventListener('click', function () {});
+  </script>`);
+
 // The hostile page sabotages the trap's flush-time reads. Page scripts run AFTER init
 // scripts, so the trap's observers are already registered when this runs — which is the
 // point: LCP/CLS ride on observer state and survive; TTFB/FCP are read from the (now
@@ -72,11 +82,38 @@ const HOSTILE = page('Hostile', `<p>hostile content</p>
     performance.getEntriesByType = function () { throw new Error('sabotaged by fixture'); };
   </script>`);
 
+// Request-count pages (C3): each document makes a KNOWN number of requests — its own
+// document request plus N images, every one a distinct URL so nothing is served from
+// cache — so a per-Navigation requestCount is checkable exactly. The counts differ per
+// page on purpose: a counter that carries over between documents cannot match all three.
+// Plain links let a spec leave by clicking, not only by goto.
+function requestCountPage(title: string, images: number): string {
+  const imgs = Array.from({ length: images }, (_, i) =>
+    `<img src="/rc/pixel.gif?page=${encodeURIComponent(title)}&n=${i}" width="1" height="1" alt="">`,
+  ).join('');
+  return `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>${title}</title><link rel="icon" href="data:,"></head>
+<body>
+  <h1>${title}</h1>
+  <p>${imgs}</p>
+  <p><a id="to-two" href="/rc/two">two</a> <a id="to-three" href="/rc/three">three</a></p>
+</body>
+</html>`;
+}
+
+/** A 1x1 transparent GIF. */
+const PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+
 const ROUTES: Record<string, string> = {
+  '/rc/one': requestCountPage('RC One', 3),
+  '/rc/two': requestCountPage('RC Two', 1),
+  '/rc/three': requestCountPage('RC Three', 0),
   '/': page('Home', '<p>landing content</p>'),
   '/second': page('Second', '<p>second content</p>'),
   '/third': page('Third', '<p>third content</p>'),
   '/hostile': HOSTILE,
+  '/fast': FAST,
 };
 
 export interface FixtureServer {
@@ -87,6 +124,11 @@ export interface FixtureServer {
 export async function startFixtureServer(): Promise<FixtureServer> {
   const server: Server = createServer((req, res) => {
     const pathname = (req.url ?? '/').split('?')[0] ?? '/';
+    if (pathname === '/rc/pixel.gif') {
+      res.writeHead(200, { 'content-type': 'image/gif', 'cache-control': 'no-store' });
+      res.end(PIXEL_GIF);
+      return;
+    }
     const html = ROUTES[pathname];
     if (html === undefined) {
       res.writeHead(404, { 'content-type': 'text/plain' });
