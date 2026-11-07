@@ -5,8 +5,8 @@
 // startup and every Execution errors — loud, which is the point.
 //
 // Journey shape rationale (measured, not guessed) lives in upload-kit/example.spec.ts
-// and upload-kit/README.md: one site per journey (cross-site loses the departing
-// Sample), server-rendered pages (SPA clicks aren't Navigations), and an interaction
+// and upload-kit/README.md: one site per journey (simply small and stable), server-
+// rendered pages (SPA clicks aren't Navigations), and an interaction
 // that does real rendering work so Navigation 1 earns a real INP.
 import { test, expect } from 'bzm-playwright-vitals';
 
