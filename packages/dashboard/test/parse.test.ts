@@ -92,15 +92,67 @@ describe('parseSampleJson', () => {
     expect(result.sample.vitals.myCustomTiming).toEqual({ value: 42, status: 'ok' });
   });
 
-  it('preserves an unknown metric status verbatim (aggregation treats it as not-ok)', () => {
+  it('rejects a metric status outside the closed vocabulary — loudly, with the metric named (B2)', () => {
+    // The status set is closed (SPEC.md); a new status is a schemaVersion change, so an
+    // unrecognised one is a record this dashboard cannot interpret — never silently kept.
     const raw = JSON.stringify({
       ...validSample,
       vitals: { ...validSample.vitals, lcp: { value: 999, status: 'brand-new-status' } },
     });
     const result = parseSampleJson(raw);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/vitals\.lcp\.status/);
+    expect(result.reason).toMatch(/brand-new-status/);
+  });
+
+  it('rejects a metric whose value is a string — vitals.lcp = {value: "12", status: "ok"} (B2)', () => {
+    const raw = JSON.stringify({
+      ...validSample,
+      vitals: { ...validSample.vitals, lcp: { value: '12', status: 'ok' } },
+    });
+    const result = parseSampleJson(raw);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/vitals\.lcp\.value/);
+  });
+
+  it('rejects a Sample whose test identity is missing project (B2)', () => {
+    const { project: _, ...test } = validSample.test;
+    const result = parseSampleJson(JSON.stringify({ ...validSample, test }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/test\.project/);
+  });
+
+  it('rejects a non-ok metric that still carries a value — a value survives only when measured (B2)', () => {
+    const raw = JSON.stringify({
+      ...validSample,
+      vitals: { ...validSample.vitals, cls: { value: 0, status: 'unsupported' } },
+    });
+    const result = parseSampleJson(raw);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/vitals\.cls\.value/);
+  });
+
+  it('rejects a context counter that is not a number (B2)', () => {
+    const raw = JSON.stringify({ ...validSample, context: { ...validSample.context, requestCount: '87' } });
+    const result = parseSampleJson(raw);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/context\.requestCount/);
+  });
+
+  it('accepts the additive B2 identity fields and returns the record untouched', () => {
+    const raw = JSON.stringify({
+      ...validSample,
+      test: { ...validSample.test, id: 'a1b2c3-d4e5', titlePath: ['checkout', 'demo Landing Page'], path: 'flows/example.spec.ts' },
+    });
+    const result = parseSampleJson(raw);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.sample.vitals.lcp.status).toBe('brand-new-status');
+    expect(result.sample).toEqual(JSON.parse(raw));
   });
 });
 
@@ -153,6 +205,22 @@ describe('parseOutcomeJson', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/test/);
+  });
+
+  it('rejects an Outcome whose test.repeat is a string (B2)', () => {
+    const result = parseOutcomeJson(
+      JSON.stringify({ ...validOutcome, test: { ...validOutcome.test, repeat: '18' } }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/test\.repeat/);
+  });
+
+  it('rejects an Outcome whose retry is not an integer (B2)', () => {
+    const result = parseOutcomeJson(JSON.stringify({ ...validOutcome, retry: '0' }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/retry/);
   });
 
   it('rejects unparseable bytes with a reason', () => {

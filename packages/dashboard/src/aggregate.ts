@@ -247,7 +247,7 @@ function aggregateMetric(pool: AttributedSample[], name: string): MetricAggregat
     }
     // Closed status vocabulary: only exactly "ok" (with a real number) pools.
     // A not-ok status is never pooled EVEN IF it carries a number, and an
-    // unrecognized status — the open parse path preserves them — is not-ok.
+    // unrecognized status is not-ok (the parser rejects one; kept as a backstop).
     if (metric.status === 'ok' && typeof metric.value === 'number') {
       okValues.push(metric.value);
     } else {

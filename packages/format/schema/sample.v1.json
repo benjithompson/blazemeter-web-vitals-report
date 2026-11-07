@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/benjithompson/blazemeter-web-vitals-report/blob/main/packages/format/schema/sample.v1.json",
+  "title": "bzm-vitals-format Sample (format v1)",
+  "description": "One Sample per Navigation. Mirrors validateSample in bzm-vitals-format, and is tested to agree with it. Unknown fields are allowed everywhere; metric names are open, metric status is closed.",
+  "type": "object",
+  "required": ["schemaVersion", "ts", "url", "test", "navigationIndex", "vitals", "navigation", "context"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "ts": { "type": "number", "description": "Epoch ms at Navigation start." },
+    "url": { "type": "string", "description": "The raw address exactly as navigated." },
+    "route": { "type": "string", "description": "Optional. The declared Route, verbatim." },
+    "test": { "$ref": "#/$defs/testIdentity" },
+    "navigationIndex": { "$ref": "#/$defs/count" },
+    "pageIndex": {
+      "$ref": "#/$defs/count",
+      "description": "Optional (additive). Which page of the browser context the Navigation happened on; absent means the test's own page."
+    },
+    "vitals": {
+      "type": "object",
+      "description": "Metric name to {value, status}. Names are open.",
+      "additionalProperties": { "$ref": "#/$defs/metric" }
+    },
+    "navigation": {
+      "type": "object",
+      "required": ["domContentLoadedMs", "loadEventMs"],
+      "properties": {
+        "domContentLoadedMs": { "type": ["number", "null"] },
+        "loadEventMs": { "type": ["number", "null"] }
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": ["workers", "resourceCount", "requestCount", "failedRequests"],
+      "properties": {
+        "workers": { "$ref": "#/$defs/countOrNull" },
+        "resourceCount": { "$ref": "#/$defs/countOrNull" },
+        "requestCount": { "$ref": "#/$defs/countOrNull" },
+        "failedRequests": { "$ref": "#/$defs/countOrNull" }
+      }
+    }
+  },
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "countOrNull": { "anyOf": [{ "$ref": "#/$defs/count" }, { "type": "null" }] },
+    "testIdentity": {
+      "type": "object",
+      "required": ["file", "title", "project", "repeat", "worker"],
+      "properties": {
+        "file": { "type": "string" },
+        "title": { "type": "string" },
+        "project": { "type": "string" },
+        "repeat": { "$ref": "#/$defs/count" },
+        "worker": { "$ref": "#/$defs/count" },
+        "id": { "type": "string", "description": "Optional (additive). Playwright's testInfo.testId." },
+        "titlePath": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional (additive). testInfo.titlePath without the file element."
+        },
+        "path": { "type": "string", "description": "Optional (additive). Spec path relative to testDir, POSIX separators." }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "required": ["value", "status"],
+      "properties": {
+        "value": { "type": ["number", "null"] },
+        "status": { "enum": ["ok", "unsupported", "no-interaction", "not-finalized", "error", "unknown"] }
+      },
+      "if": { "properties": { "status": { "const": "ok" } } },
+      "then": { "properties": { "value": { "type": "number" } } },
+      "else": { "properties": { "value": { "type": "null" } } }
+    }
+  }
+}
