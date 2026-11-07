@@ -92,8 +92,18 @@ interface RawReading {
 interface CollectorState {
   /** navigationIndex is 1-based and increments per Navigation within an Execution. */
   nextNavigationIndex: number;
-  /** Requests seen on this page (cumulative — "from the page"). */
+  /**
+   * Requests the CURRENT document has made: its own document request, then everything it
+   * fetched (subframes included). Reset when the next document commits — see
+   * countRequestsPerDocument.
+   */
   requestCount: number;
+  /**
+   * Main-frame document requests (and their redirects) for a document that has not
+   * committed yet. They belong to the NEXT document, so they wait here instead of
+   * inflating the leaving one's count.
+   */
+  incomingDocumentRequests: number;
   failedRequests: number;
   /** In-flight writes; teardown awaits these so no Sample is lost to a race. */
   pending: Promise<void>[];
@@ -537,8 +547,36 @@ async function attachCollector(
   await page.addInitScript(trapSource(REPORT_BINDING, FLUSH_HOOK));
   flushBeforeNavigating(page);
 
-  page.on('request', () => { state.requestCount++; });
+  countRequestsPerDocument(page, state);
   page.on('requestfailed', () => { state.failedRequests++; });
+}
+
+/**
+ * requestCount is per document, not per page. Each request belongs to the document that
+ * was current when it was made — except a main-frame document request, which belongs to
+ * the document it fetches. The count resets when that document COMMITS (main-frame
+ * framenavigated), not when its request starts: a leaving document's first reading
+ * (beforeunload, or the flush before a test-driven goto) always reaches Node before the
+ * next document can commit, so its count is snapshotted from its own requests only. A
+ * same-document navigation (pushState, #hash) commits with no document request in
+ * flight and resets nothing.
+ */
+function countRequestsPerDocument(page: Page, state: CollectorState): void {
+  page.on('request', (request) => {
+    let isDocumentRequest = false;
+    try {
+      isDocumentRequest = request.isNavigationRequest() && request.frame() === page.mainFrame();
+    } catch {
+      // A service-worker request has no frame — it is the current document's.
+    }
+    if (isDocumentRequest) state.incomingDocumentRequests++;
+    else state.requestCount++;
+  });
+  page.on('framenavigated', (frame) => {
+    if (frame !== page.mainFrame() || state.incomingDocumentRequests === 0) return;
+    state.requestCount = state.incomingDocumentRequests;
+    state.incomingDocumentRequests = 0;
+  });
 }
 
 /**
@@ -693,6 +731,7 @@ export const test = base.extend<CollectorFixtures, CollectorWorkerFixtures>({
     const state: CollectorState = {
       nextNavigationIndex: 1,
       requestCount: 0,
+      incomingDocumentRequests: 0,
       failedRequests: 0,
       pending: [],
       pendingRoute: null,
