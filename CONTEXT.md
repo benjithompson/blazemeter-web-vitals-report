@@ -31,8 +31,6 @@ The report labels a Test with its `titlePath` (the describe chain, joined by ` â
 
 When one Report mixes records with and without `test.id` (an old and a new collector), an id-less record joins the one `test.id` its triple carries in the same scope (the same Engine for the Outcome join, the whole Report for grouping). If its triple carries two or more ids, the record is ambiguous and stays a separate Test keyed by the triple â€” never guessed into either.
 
-The triple can collide: the same title in two `describe` blocks, or the same spec basename in two folders. A record that carries **`test.id`** (Playwright's id for the Test) names the Test by that instead; `titlePath` and `path` are its readable form. Older records without `test.id` fall back to the triple.
-
 *Not* "test case", "scenario" (Taurus uses "scenario" for its own thing), or "spec".
 
 ### Execution
