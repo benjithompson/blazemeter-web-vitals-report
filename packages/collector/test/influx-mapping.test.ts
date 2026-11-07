@@ -13,6 +13,8 @@ import {
   resolveInfluxConfig,
   resolveInfluxToken,
   resolveMeasurement,
+  resolveEngineIndex,
+  timestampNs,
   DEFAULT_MEASUREMENT,
   type InfluxMappingContext,
 } from '../src/influx-destination';
@@ -22,6 +24,7 @@ const CTX: InfluxMappingContext = {
   measurement: 'web_vitals',
   location: 'us-west-1',
   engine: null,
+  engineIndex: 0,
 };
 
 function m(value: number | null, status: Metric['status']): Metric {
@@ -32,7 +35,7 @@ function m(value: number | null, status: Metric['status']): Metric {
 function sample(overrides: Partial<Sample> & { vitals: Sample['vitals'] }): Sample {
   return {
     schemaVersion: 1,
-    ts: 1_700_000_123_456, // epoch ms — written verbatim at precision=ms
+    ts: 1_700_000_123_456, // epoch ms — written as ns (ts·1e6 + a per-writer offset)
     url: 'https://shop.example.com/order/98765?ref=email#top',
     test: { file: 'x.spec.ts', title: 'checkout journey', project: 'chromium', repeat: 0, worker: 0 },
     navigationIndex: 1,
@@ -81,7 +84,7 @@ describe('sampleToPoint — one wide point per Sample, one field per ok vital', 
     expect(sampleToPoint(s, CTX)).toBeNull();
   });
 
-  it('tags are the bounded dimensions: route, location, project, title — never worker/repeat', () => {
+  it('tags are the bounded dimensions: route, location, project, title, worker — never repeat', () => {
     const s = sample({ route: '/order/{id}', vitals: { lcp: m(890, 'ok') } });
     const p = sampleToPoint(s, CTX)!;
     expect(p.tags).toEqual({
@@ -89,7 +92,13 @@ describe('sampleToPoint — one wide point per Sample, one field per ok vital', 
       location: 'us-west-1',
       project: 'chromium',
       title: 'checkout journey',
+      worker: '0', // bounded by --workers; keeps concurrent workers' points apart (C5)
     });
+  });
+
+  it("the worker tag is the Sample's own workerIndex", () => {
+    const s = sample({ vitals: { lcp: m(1, 'ok') }, test: { file: 'x.spec.ts', title: 't', project: 'chromium', repeat: 0, worker: 3 } });
+    expect(sampleToPoint(s, CTX)!.tags.worker).toBe('3');
   });
 
   it('with no declared route, the tag derives the URL pathname (query/fragment stripped)', () => {
@@ -104,10 +113,52 @@ describe('sampleToPoint — one wide point per Sample, one field per ok vital', 
     expect(withEngine.tags.engine).toBe('#2');
   });
 
-  it('timestamp is Sample.ts verbatim (epoch-ms) and the measurement comes from the context', () => {
-    const p = sampleToPoint(sample({ vitals: { lcp: m(1, 'ok') } }), CTX)!;
-    expect(p.timestamp).toBe(1_700_000_123_456);
+  it('timestamp is ns: Sample.ts·1e6 + (engineIndex·1000 + worker), and the measurement comes from the context', () => {
+    const s = sample({ vitals: { lcp: m(1, 'ok') }, test: { file: 'x.spec.ts', title: 't', project: 'chromium', repeat: 0, worker: 3 } });
+    const p = sampleToPoint(s, { ...CTX, engineIndex: 2 })!;
+    expect(p.timestamp).toBe(1_700_000_123_456_002_003n);
     expect(p.measurement).toBe('web_vitals');
+  });
+});
+
+describe('timestampNs — deterministic, unique per writer (C5)', () => {
+  it('is ts_ms·1e6 + (engineIndex·1000 + workerIndex) % 1e6, exactly (BigInt, no float rounding)', () => {
+    expect(timestampNs(1_700_000_123_456, 0, 0)).toBe(1_700_000_123_456_000_000n);
+    expect(timestampNs(1_700_000_123_456, 1, 0)).toBe(1_700_000_123_456_001_000n);
+    expect(timestampNs(1_700_000_123_456, 1, 7)).toBe(1_700_000_123_456_001_007n);
+    expect(timestampNs(1_700_000_123_456, 1_000, 5)).toBe(1_700_000_123_456_000_005n); // wraps at 1e6
+  });
+
+  it('never leaves the millisecond: the point still reads as Sample.ts at ms resolution', () => {
+    const ns = timestampNs(1_700_000_123_456, 999, 999);
+    expect(ns / 1_000_000n).toBe(1_700_000_123_456n);
+  });
+
+  it('distinct (engine, worker) writers at the same ms get distinct timestamps', () => {
+    const seen = new Set<bigint>();
+    for (let e = 0; e < 5; e++) for (let w = 0; w < 8; w++) seen.add(timestampNs(1_000, e, w));
+    expect(seen.size).toBe(40);
+  });
+
+  it('is deterministic: the same inputs always give the same point time', () => {
+    expect(timestampNs(42, 3, 4)).toBe(timestampNs(42, 3, 4));
+  });
+});
+
+describe('resolveEngineIndex — the per-Engine part of the timestamp offset', () => {
+  it("reads Taurus's per-Engine session index", () => {
+    expect(resolveEngineIndex({ TAURUS_SESSIONS_INDEX: '2' })).toBe(2);
+  });
+
+  it('is 0 locally, or when the index is not a non-negative integer', () => {
+    expect(resolveEngineIndex({})).toBe(0);
+    expect(resolveEngineIndex({ TAURUS_SESSIONS_INDEX: 'x' })).toBe(0);
+    expect(resolveEngineIndex({ TAURUS_SESSIONS_INDEX: '-1' })).toBe(0);
+    expect(resolveEngineIndex({ TAURUS_SESSIONS_INDEX: '1.5' })).toBe(0);
+  });
+
+  it('ignores the BZM_VITALS_ENGINE label override (a label, not an index)', () => {
+    expect(resolveEngineIndex({ BZM_VITALS_ENGINE: 'eu-a', TAURUS_SESSIONS_INDEX: '3' })).toBe(3);
   });
 });
 
@@ -146,6 +197,23 @@ describe('pointToLine — line-protocol assembly + escaping', () => {
       fields: { lcp: 1 },
     });
     expect(line).toBe('web_vitals,route=/a\\,b\\=c\\ d lcp=1 1700000123456');
+  });
+
+  it('replaces \n and \r in tag values with a space — line protocol cannot carry a newline (C5)', () => {
+    const line = pointToLine({ ...base, tags: { title: 'a\nb\r\nc', route: '/x\ry' }, fields: { lcp: 1 } })!;
+    expect(line).toBe('web_vitals,route=/x\\ y,title=a\\ b\\ \\ c lcp=1 1700000123456');
+    expect(line).not.toMatch(/[\r\n]/);
+  });
+
+  it('a newline in the measurement or a key is replaced the same way', () => {
+    const line = pointToLine({ measurement: 'web\nvitals', tags: { 'ro\nute': '/x' }, fields: { 'l\ncp': 1 }, timestamp: 1 })!;
+    expect(line).toBe('web\\ vitals,ro\\ ute=/x l\\ cp=1 1');
+  });
+
+  it('renders a BigInt (ns) timestamp exactly', () => {
+    expect(pointToLine({ ...base, tags: {}, fields: { lcp: 1 }, timestamp: 1_700_000_123_456_001_007n })).toBe(
+      'web_vitals lcp=1 1700000123456001007',
+    );
   });
 
   it('drops empty tag values (line protocol forbids them)', () => {

@@ -4,10 +4,11 @@
 // exactly without touching the network. The Docker integration test proves the same body
 // round-trips a real bucket.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Sample } from 'bzm-vitals-format';
 import { InfluxDestination } from '../src/influx-destination';
 import type { InfluxFetchLike } from '../src/influx-writer';
+import { startInfluxServer, type InfluxServer } from './helpers/influx-server';
 import { ManualClock } from './helpers/manual-clock';
 
 const CONN = {
@@ -85,7 +86,7 @@ describe('isEnabled — full connection present and not killed', () => {
 });
 
 describe('send — POST to /api/v2/write with Token auth and a line-protocol body', () => {
-  it('posts the wide-format line protocol with the org/bucket/precision query', async () => {
+  it('posts the wide-format line protocol with the org/bucket/precision query (ns, worker tag)', async () => {
     const { fetch, calls } = fakeFetch();
     const d = new InfluxDestination({ env: { ...CONN, BZM_VITALS_LOCATION: 'us-west-1' }, fetch });
     await d.init();
@@ -95,12 +96,12 @@ describe('send — POST to /api/v2/write with Token auth and a line-protocol bod
     const call = calls[0]!;
     expect(call.method).toBe('POST');
     expect(call.url).toBe(
-      'https://influx.example.com/api/v2/write?org=perf&bucket=vitals&precision=ms',
+      'https://influx.example.com/api/v2/write?org=perf&bucket=vitals&precision=ns',
     );
     expect(call.headers.Authorization).toBe('Token tok-123');
     expect(call.headers['Content-Type']).toBe('text/plain; charset=utf-8');
     expect(call.body).toBe(
-      'web_vitals,location=us-west-1,project=chromium,route=/order/{id},title=t lcp=2276.7,cls=0.083 1700000123456',
+      'web_vitals,location=us-west-1,project=chromium,route=/order/{id},title=t,worker=0 lcp=2276.7,cls=0.083 1700000123456000000',
     );
   });
 
@@ -136,6 +137,74 @@ describe('send — POST to /api/v2/write with Token auth and a line-protocol bod
     await d.init();
     await d.send([sample({ lcp: m(890, 'ok') })]);
     expect(calls[0]!.body).not.toContain('tok-123');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C5 — point uniqueness and newline handling, checked against the integration double
+// (a real HTTP endpoint that parses line protocol strictly and overwrites like Influx).
+// ---------------------------------------------------------------------------
+
+describe('same-millisecond Samples never overwrite each other (C5)', () => {
+  let influx: InfluxServer;
+  beforeAll(async () => {
+    influx = await startInfluxServer();
+  });
+  afterAll(async () => {
+    await influx?.close();
+  });
+
+  const env = (extra: Record<string, string> = {}) => ({
+    ...CONN,
+    BZM_INFLUX_URL: influx.url,
+    BZM_VITALS_LOCATION: 'us-west-1',
+    ...extra,
+  });
+  const at = (worker: number, route: string) =>
+    sample({ lcp: m(890, 'ok') }, { route, test: { file: 'x.spec.ts', title: 't', project: 'chromium', repeat: 0, worker } });
+
+  it('two Samples from different workers with the same ts land as two distinct points', async () => {
+    const d = new InfluxDestination({ env: env({ TAURUS_SESSIONS_INDEX: '1' }) });
+    await d.init();
+    await d.send([at(0, '/same-ms-workers'), at(1, '/same-ms-workers')]);
+    const points = influx.points().filter((p) => p.tags.route === '/same-ms-workers');
+    expect(points).toHaveLength(2);
+    expect(new Set(points.map((p) => p.tags.worker))).toEqual(new Set(['0', '1']));
+  });
+
+  it('the same worker index on two Engines (aggregate mode, no engine tag) still lands as two points', async () => {
+    for (const engine of ['1', '2']) {
+      const d = new InfluxDestination({ env: env({ TAURUS_SESSIONS_INDEX: engine }) });
+      await d.init();
+      await d.send([at(0, '/same-ms-engines')]);
+    }
+    const points = influx.points().filter((p) => p.tags.route === '/same-ms-engines');
+    expect(points).toHaveLength(2);
+    expect(points.every((p) => p.tags.engine === undefined)).toBe(true); // aggregate mode
+    expect(new Set(points.map((p) => p.timestampNs)).size).toBe(2); // told apart by timestamp
+  });
+
+  it('writes at ns precision, and the point time is still the Sample ts to the millisecond', async () => {
+    const d = new InfluxDestination({ env: env() });
+    await d.init();
+    await d.send([at(3, '/precision')]);
+    expect(influx.precisions.at(-1)).toBe('ns');
+    const [p] = influx.points().filter((x) => x.tags.route === '/precision');
+    expect(p!.timestampNs / 1_000_000n).toBe(BigInt(1_700_000_123_456));
+  });
+
+  it('a title containing \\n (and \\r) produces a valid line, with the newline as a space', async () => {
+    const d = new InfluxDestination({ env: env() });
+    await d.init();
+    const s = sample(
+      { lcp: m(890, 'ok') },
+      { route: '/multi\nline', test: { file: 'x.spec.ts', title: 'line one\r\nline two', project: 'chromium', repeat: 0, worker: 0 } },
+    );
+    await expect(d.send([s])).resolves.toBeUndefined();
+    expect(influx.rejections).toEqual([]);
+    const [p] = influx.points().filter((x) => x.tags.route === '/multi line');
+    expect(p!.tags.title).toBe('line one  line two');
+    expect(influx.bodies.at(-1)!.split('\n')).toHaveLength(1); // one Sample, one line
   });
 });
 

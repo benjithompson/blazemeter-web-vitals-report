@@ -35,17 +35,17 @@ export interface InfluxConfig {
 /**
  * One measurement observation. `tags` are the indexed dimensions (low cardinality!);
  * `fields` are the values (float64 here — we never round or scale). `timestamp` is in the
- * unit named by `precision` (ms for this project — Sample.ts is epoch-ms).
+ * unit named by `precision`; a bigint carries ns values past Number.MAX_SAFE_INTEGER exactly.
  */
 export interface Point {
   measurement: string;
   tags: Record<string, string>;
   fields: Record<string, number>;
-  /** Integer timestamp in `precision` units. */
-  timestamp: number;
+  /** Integer timestamp in `precision` units (a bigint for ns epochs, which exceed 2^53). */
+  timestamp: number | bigint;
 }
 
-/** Write precision. This project uses 'ms' (Sample.ts is epoch-ms); others exist for reuse. */
+/** Write precision. The vitals feed writes 'ns' (see the Influx destination); default 'ms'. */
 export type Precision = 'ns' | 'us' | 'ms' | 's';
 
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -64,16 +64,23 @@ export interface InfluxWriterDeps {
 // Line protocol — PURE assembly + escaping (unit-tested without any I/O).
 // ---------------------------------------------------------------------------
 
+/** Line protocol has NO escape for a newline in a measurement, tag key, tag value or field
+ *  key — a newline always ends the line. So \n and \r become a space (then escaped like any
+ *  space) instead: a title or route spanning lines still writes one valid line. */
+function foldNewlines(s: string): string {
+  return s.replace(/[\r\n]/g, ' ');
+}
+
 /** Escape a measurement name: commas and spaces are special (equals is NOT, in measurements). */
 function escapeMeasurement(s: string): string {
-  return s.replace(/[,\s]/g, (c) => '\\' + c);
+  return foldNewlines(s).replace(/[,\s]/g, (c) => '\\' + c);
 }
 
 /** Escape a tag key, a tag value, OR a field key — all three share the same rule in line
  *  protocol: commas, equals, and spaces are special. (Measurements and field values differ,
  *  and have their own handling.) */
 function escapeKeyOrTagValue(s: string): string {
-  return s.replace(/[,=\s]/g, (c) => '\\' + c);
+  return foldNewlines(s).replace(/[,=\s]/g, (c) => '\\' + c);
 }
 
 /**
