@@ -652,7 +652,7 @@ function routeTableHtml(view: ReportView, idPrefix: string): string {
   return (
     `<div class="table-scroll"><table class="routes"><thead>${head}</thead>` +
     `<tbody>${body}</tbody></table></div>` +
-    `<p class="note">${escapeHtml(S.thresholdNote)} · ${escapeHtml(S.coverageNote)}</p>`
+    `<p class="note">${escapeHtml(S.thresholdNote)} · ${escapeHtml(S.coverageNote)} · ${escapeHtml(S.percentileNote)}</p>`
   );
 }
 

@@ -114,6 +114,12 @@ already installed.
   are **Cold Starts**: first load on a fresh browser (cold cache, cold DNS) —
   real page loads a real first-time visitor experiences, kept in the numbers
   and flagged so a slow tail is explained, not mysterious.
+- **Percentiles** use the *lower* method (NumPy `method='lower'`):
+  sort the values and take the one at index `floor((n − 1) × q)`. Every
+  p50/p75/p95 shown is a value that was actually measured — never an
+  interpolated one. At small sample counts this reads slightly low (with 10
+  measurements, "p95" is the second-highest), which is why coverage sits
+  beside every number.
 - **Click a Route row** to drill down: per-Test, per-Engine breakdowns and
   distribution histograms.
 - **Failed test runs are included by default.** Tests often fail *because*
