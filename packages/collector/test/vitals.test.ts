@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Metric } from 'bzm-vitals-format';
 import { startFixtureServer, type FixtureServer } from './helpers/fixture-server';
 import { runPlaywright, findSamples, type FoundSample } from './helpers/run-playwright';
+import { firefoxRunOrSkip, itFirefox } from './helpers/browsers';
 
 /** The collector's closed vocabulary: format v1's MetricStatus MINUS 'unknown', which
  *  is the legacy adapter's alone. The collector never writes it. */
@@ -47,11 +48,11 @@ beforeAll(async () => {
   server = await startFixtureServer();
   const [normalRun, firefoxRun, hostileRun] = await Promise.all([
     runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url }),
-    runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url, project: 'firefox' }),
+    firefoxRunOrSkip(() => runPlaywright({ spec: 'vitals.spec.ts', baseURL: server.url, project: 'firefox' })),
     runPlaywright({ spec: 'hostile.spec.ts', baseURL: server.url }),
   ]);
   normal = await findSamples(normalRun.outputDir);
-  firefox = await findSamples(firefoxRun.outputDir);
+  firefox = firefoxRun ? await findSamples(firefoxRun.outputDir) : [];
   hostile = await findSamples(hostileRun.outputDir);
 }, 300_000);
 
@@ -174,7 +175,7 @@ describe('the normal journey on chromium', () => {
 });
 
 describe('a non-Chromium project still emits Samples', () => {
-  it('firefox emitted a Sample per Navigation — the incumbent skipped these entirely', () => {
+  itFirefox('firefox emitted a Sample per Navigation — the incumbent skipped these entirely', () => {
     // 2 tests, 3 Navigations total, single repeat.
     expect(firefox.length).toBe(3);
     for (const s of firefox) {
@@ -182,7 +183,7 @@ describe('a non-Chromium project still emits Samples', () => {
     }
   });
 
-  it("cls is {value: null, status: 'unsupported'} — never a fake 0", () => {
+  itFirefox("cls is {value: null, status: 'unsupported'} — never a fake 0", () => {
     for (const s of firefox) {
       const cls = vital(s, 'cls');
       expect(cls.status, s.path).toBe('unsupported');
@@ -190,7 +191,7 @@ describe('a non-Chromium project still emits Samples', () => {
     }
   });
 
-  it('ttfb and fcp are still ok on firefox', () => {
+  itFirefox('ttfb and fcp are still ok on firefox', () => {
     for (const s of firefox) {
       expect(vital(s, 'ttfb').status, s.path).toBe('ok');
       expect(vital(s, 'fcp').status, s.path).toBe('ok');
