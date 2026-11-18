@@ -20,8 +20,9 @@ const execFileP = promisify(execFile);
 const COLLECTOR_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FORMAT_DIR = join(COLLECTOR_DIR, '..', 'format');
 
-/** A version that is only ever an exact release — file:/link:/workspace: specifiers fail this. */
-const EXACT_SEMVER = /^\d+\.\d+\.\d+$/;
+/** A version that is only ever an exact release — file:/link:/workspace: specifiers fail this.
+ *  A pre-release suffix (Changesets pre mode, e.g. 0.3.0-rc.0) is still an exact version. */
+const EXACT_SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 
 async function packedPaths(pkgDir: string): Promise<string[]> {
   const { stdout } = await execFileP('npm', ['pack', '--dry-run', '--json'], {
