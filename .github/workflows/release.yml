@@ -10,8 +10,9 @@
 #          standalone files and attaches all three to one GitHub Release
 #   - otherwise -> nothing
 #
-# No secrets are used. npm trusts this workflow file by name (one-time setup per package,
-# see .changeset/README.md). id-token: write is granted to the publish job only.
+# npm trusts this workflow file by name (one-time setup per package, see
+# .changeset/README.md). Until that is set up, the optional NPM_TOKEN secret is the
+# fallback. id-token: write is granted to the publish job only.
 name: Release
 
 on:
@@ -135,6 +136,13 @@ jobs:
 
       - id: publish
         uses: changesets/action/publish@v2.1.2
+        # Fallback until npm trusted publishing is set up for the three packages
+        # (.changeset/README.md). When the NPM_TOKEN secret is absent, NODE_AUTH_TOKEN is
+        # empty and npm uses trusted publishing (OIDC) alone. A token publish does not add
+        # provenance by itself, so it is asked for here.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
         with:
           pack-dir-artifact-id: ${{ needs.pack.outputs.pack-dir-artifact-id }}
           # One combined GitHub Release with the standalone files is created below
@@ -192,12 +200,16 @@ jobs:
           writeFileSync(`${process.env.RUNNER_TEMP}/notes.md`, lines.join('\n') + '\n');
           const title = published.map(({ name, version: v }) => `${name} ${v}`).join(', ');
           writeFileSync(`${process.env.RUNNER_TEMP}/title.txt`, title);
+          // A pre-release version (Changesets pre mode, e.g. 0.3.0-rc.0) makes a GitHub
+          // pre-release, so "latest" stays on the last stable release.
+          const pre = published.some(({ version: v }) => v.includes('-'));
+          writeFileSync(`${process.env.RUNNER_TEMP}/kind.txt`, pre ? '--prerelease' : '--latest');
           EOF
           gh release create "$tag" \
             --target "$GITHUB_SHA" \
             --title "$(cat "$RUNNER_TEMP/title.txt")" \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            --latest \
+            "$(cat "$RUNNER_TEMP/kind.txt")" \
             packages/collector/dist-standalone/bzm-playwright-vitals.ts \
             packages/dashboard/dist-standalone/bzm-vitals-dashboard.mjs \
             packages/dashboard/dist-standalone/bzm-vitals-dashboard.ts

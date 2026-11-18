@@ -59,17 +59,27 @@ No secret is stored for publishing. Do these once:
 ### Fallback: an npm token
 
 If trusted publishing can't be used, create a granular npm access token with publish
-rights on the three packages. Store it as the repository secret `NPM_TOKEN`, and add this
-to the "Publish" step of the `publish` job in `release.yml`:
+rights on the three packages, and store it as the repository secret `NPM_TOKEN`. The
+"Publish" step of the `publish` job in `release.yml` already reads it:
 
 ```yaml
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
 ```
 
-`actions/setup-node` already writes an `.npmrc` that reads `NODE_AUTH_TOKEN`. Provenance
-still works, because the job keeps `id-token: write`. Tokens expire, so trusted publishing
-is preferred.
+`actions/setup-node` writes an `.npmrc` that reads `NODE_AUTH_TOKEN`. When the secret is
+absent, the variable is empty and npm uses trusted publishing alone. Provenance still
+works, because the job keeps `id-token: write`. Tokens expire, so trusted publishing is
+preferred: when it is set up, delete the `NPM_TOKEN` secret.
+
+### Pre-releases
+
+`npx changeset pre enter rc` (committed as `.changeset/pre.json`) makes the next
+Version Packages PR use `-rc.N` versions. They publish under the npm dist-tag `rc`, and
+the GitHub Release is marked as a pre-release, so `latest` does not move.
+`npx changeset pre exit` ends pre mode, and the next Version Packages PR makes the stable
+versions.
 
 ## Checking a release locally (nothing is published)
 
